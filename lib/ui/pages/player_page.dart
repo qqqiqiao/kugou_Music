@@ -2005,6 +2005,7 @@ class _LyricPlayerPageState extends State<_LyricPlayerPage>
   /// 歌词字体缩放倍率（持久化）。
   static const _lyricScaleKey = 'settings.lyric_scale';
   double _lyricScale = 1.0;
+  bool _showBottomControls = true;
 
   bool _lastLyricBlurEnabled = false;
   bool _lastIsPreparing = false;
@@ -2126,63 +2127,85 @@ class _LyricPlayerPageState extends State<_LyricPlayerPage>
           : const EdgeInsets.fromLTRB(20, 8, 20, 18),
       child: Stack(
         children: [
-          _LyricViewport(
-            player: widget.player,
-            lyrics: widget.player.lyrics,
-            isPreparing: widget.player.isPreparing,
-            displayMode: displayMode,
-            isPageVisible: widget.isPageVisible,
-            lyricScale: _lyricScale,
-            compact: widget.isWatch,
+          GestureDetector(
+            behavior: HitTestBehavior.translucent,
+            onTap: () {
+              setState(() {
+                _showBottomControls = !_showBottomControls;
+              });
+            },
+            child: _LyricViewport(
+              player: widget.player,
+              lyrics: widget.player.lyrics,
+              isPreparing: widget.player.isPreparing,
+              displayMode: displayMode,
+              isPageVisible: widget.isPageVisible,
+              lyricScale: _lyricScale,
+              compact: widget.isWatch,
+            ),
           ),
           // 字体大小调节按钮（左侧底部，左对齐）
           Positioned(
             left: 0,
             bottom: widget.isWatch ? 2 : 16,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                _GlassIconButton(
-                  tooltip: '缩小歌词',
-                  size: widget.isWatch ? 30 : null,
-                  onPressed: () => _setLyricScale(_lyricScale - 0.1),
-                  icon: Icons.text_decrease_rounded,
+            child: AnimatedOpacity(
+              opacity: _showBottomControls ? 1.0 : 0.0,
+              duration: const Duration(milliseconds: 200),
+              child: IgnorePointer(
+                ignoring: !_showBottomControls,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _GlassIconButton(
+                      tooltip: '缩小歌词',
+                      size: widget.isWatch ? 30 : null,
+                      onPressed: () => _setLyricScale(_lyricScale - 0.1),
+                      icon: Icons.text_decrease_rounded,
+                    ),
+                    SizedBox(width: widget.isWatch ? 4 : 8),
+                    _GlassIconButton(
+                      tooltip: '放大歌词',
+                      size: widget.isWatch ? 30 : null,
+                      onPressed: () => _setLyricScale(_lyricScale + 0.1),
+                      icon: Icons.text_increase_rounded,
+                    ),
+                    // 歌词页也放一个评论入口，避免必须滑回封面页才能看评论。
+                    if (supportsComments(widget.song)) ...[
+                      SizedBox(width: widget.isWatch ? 4 : 8),
+                      _GlassIconButton(
+                        tooltip: '查看评论',
+                        size: widget.isWatch ? 30 : null,
+                        onPressed: () => openCommentPage(context, widget.song),
+                        icon: Icons.comment_outlined,
+                      ),
+                    ],
+                  ],
                 ),
-                SizedBox(width: widget.isWatch ? 4 : 8),
-                _GlassIconButton(
-                  tooltip: '放大歌词',
-                  size: widget.isWatch ? 30 : null,
-                  onPressed: () => _setLyricScale(_lyricScale + 0.1),
-                  icon: Icons.text_increase_rounded,
-                ),
-                // 歌词页也放一个评论入口，避免必须滑回封面页才能看评论。
-                if (supportsComments(widget.song)) ...[
-                  SizedBox(width: widget.isWatch ? 4 : 8),
-                  _GlassIconButton(
-                    tooltip: '查看评论',
-                    size: widget.isWatch ? 30 : null,
-                    onPressed: () => openCommentPage(context, widget.song),
-                    icon: Icons.comment_outlined,
-                  ),
-                ],
-              ],
+              ),
             ),
           ),
           if (canToggleLyricDisplayMode)
             Positioned(
               right: 0,
               bottom: widget.isWatch ? 2 : 16,
-              child: _GlassIconButton(
-                tooltip: '切换歌词模式（当前：${_lyricDisplayModeLabel(displayMode)}）',
-                size: widget.isWatch ? 30 : null,
-                onPressed: _toggleLyricDisplayMode,
-                icon: switch (displayMode) {
-                  _LyricDisplayMode.lyricsWithTranslation =>
-                    Icons.translate_rounded,
-                  _LyricDisplayMode.lyricsWithRomanization =>
-                    Icons.record_voice_over_rounded,
-                  _LyricDisplayMode.lyricsOnly => Icons.lyrics_rounded,
-                },
+              child: AnimatedOpacity(
+                opacity: _showBottomControls ? 1.0 : 0.0,
+                duration: const Duration(milliseconds: 200),
+                child: IgnorePointer(
+                  ignoring: !_showBottomControls,
+                  child: _GlassIconButton(
+                    tooltip: '切换歌词模式（当前：${_lyricDisplayModeLabel(displayMode)}）',
+                    size: widget.isWatch ? 30 : null,
+                    onPressed: _toggleLyricDisplayMode,
+                    icon: switch (displayMode) {
+                      _LyricDisplayMode.lyricsWithTranslation =>
+                        Icons.translate_rounded,
+                      _LyricDisplayMode.lyricsWithRomanization =>
+                        Icons.record_voice_over_rounded,
+                      _LyricDisplayMode.lyricsOnly => Icons.lyrics_rounded,
+                    },
+                  ),
+                ),
               ),
             ),
         ],

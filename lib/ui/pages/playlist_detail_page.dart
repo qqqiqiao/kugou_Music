@@ -957,6 +957,15 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
   /// 显示歌单操作 BottomSheet（收藏/删除/取消收藏）。
   void _showPlaylistActionSheet() {
     final options = <_ActionOption>[];
+    options.add(_ActionOption(
+      icon: Icons.share_outlined,
+      title: '分享歌单',
+      onTap: () {
+        final shareText = '🎵 推荐歌单：《${widget.playlist.title}》（共 ${_songs.length} 首歌）\n来自 KA Music';
+        Clipboard.setData(ClipboardData(text: shareText));
+        Toast.success('已复制歌单分享信息到剪贴板');
+      },
+    ));
     if (!_isAlbum && !_isInLibrary) {
       options.add(_ActionOption(
         icon: Icons.bookmark_add_outlined,
@@ -1245,10 +1254,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                           ),
                         ),
                       )
-                    else if (!widget.readOnly &&
-                        ((!_isAlbum && !_isInLibrary) ||
-                            (_isInLibrary &&
-                                !_libraryPlaylist.isLikedPlaylist)))
+                    else if (!widget.readOnly)
                       IconButton(
                         tooltip: '更多',
                         onPressed: _showPlaylistActionSheet,

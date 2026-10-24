@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:file_picker/file_picker.dart';
 import '../widgets/liquid_glass_ui.dart';
 import '../design_tokens.dart';
 import '../widgets/status_bar_overlay.dart';
@@ -48,6 +49,58 @@ class SettingsPage extends StatelessWidget {
     if (scale >= 1.2) return '特大';
     if (scale >= 1.1) return '大';
     return '标准';
+  }
+
+  Future<void> _selectCarModeScale(BuildContext context, ThemeController theme) async {
+    final scaleLabels = <double, String>{
+      0.85: '0.85x（紧凑 / 较低 DPI）',
+      1.0: '1.0x（标准）',
+      1.15: '1.15x（适度放大 / 默认推荐）',
+      1.3: '1.3x（大号 / 宽屏）',
+      1.5: '1.5x（特大 / 远视距）',
+    };
+
+    final selected = await showModalBottomSheet<double>(
+      context: context,
+      showDragHandle: true,
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      builder: (sheetContext) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '车机界面缩放',
+                  style: Theme.of(sheetContext).textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                for (final scale in ThemeController.carModeScaleOptions) ...[
+                  ListTile(
+                    title: Text(scaleLabels[scale] ?? '${scale}x'),
+                    trailing: theme.carModeScale == scale
+                        ? Icon(
+                            Icons.check_rounded,
+                            color: Theme.of(sheetContext).colorScheme.primary,
+                          )
+                        : null,
+                    onTap: () => Navigator.of(sheetContext).pop(scale),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        );
+      },
+    );
+
+    if (selected != null) {
+      await theme.setCarModeScale(selected);
+    }
   }
 
   Future<void> _selectFontScale(BuildContext context, ThemeController theme) async {
@@ -302,6 +355,17 @@ class SettingsPage extends StatelessWidget {
                         value: player.bluetoothLyricsEnabled,
                         onChanged: player.setBluetoothLyricsEnabled,
                       ),
+                      if (player.bluetoothLyricsEnabled) ...[
+                        _SettingsDivider(),
+                        _SettingsSwitchTile(
+                          icon: Icons.watch_rounded,
+                          iconColor: colorScheme.primary,
+                          title: '手环 / AVRCP 歌词同步',
+                          subtitle: '将实时歌词同步为媒体标题，供手环、手表与车机仪表盘显示',
+                          value: player.bluetoothLyricsTitleSyncEnabled,
+                          onChanged: player.setBluetoothLyricsTitleSyncEnabled,
+                        ),
+                      ],
                     ],
                     _SettingsDivider(),
                     _SettingsSwitchTile(
@@ -519,6 +583,16 @@ class SettingsPage extends StatelessWidget {
                       value: theme.carModeEnabled,
                       onChanged: (value) => theme.setCarModeEnabled(value),
                     ),
+                    if (theme.carModeEnabled) ...[
+                      _SettingsDivider(),
+                      _SettingsTile(
+                        icon: Icons.aspect_ratio_rounded,
+                        iconColor: colorScheme.primary,
+                        title: '车机界面缩放',
+                        subtitle: '${theme.carModeScale}x',
+                        onTap: () => _selectCarModeScale(context, theme),
+                      ),
+                    ],
                     _SettingsDivider(),
                     _SettingsSwitchTile(
                       icon: Icons.blur_linear_rounded,
@@ -899,6 +973,8 @@ class _CacheManagementSheetState extends State<_CacheManagementSheet> {
   int? _dataCacheSize;
   int? _downloadSize;
   int? _playCacheSize;
+  String? _downloadDirPath;
+  String? _customDownloadDir;
   bool _clearing = false;
 
   @override
@@ -914,6 +990,7 @@ class _CacheManagementSheetState extends State<_CacheManagementSheet> {
         dataCache = await widget.cache!.getCacheSize();
       } catch (_) {}
     }
+    String? dirPath, customDir;
     if (widget.downloads != null) {
       try {
         download = await widget.downloads!.getDownloadDirSize();
@@ -921,12 +998,18 @@ class _CacheManagementSheetState extends State<_CacheManagementSheet> {
       try {
         playCache = await widget.downloads!.getPlayCacheDirSize();
       } catch (_) {}
+      try {
+        dirPath = await widget.downloads!.getDownloadDirPath();
+        customDir = await widget.downloads!.getCustomDownloadDir();
+      } catch (_) {}
     }
     if (mounted) {
       setState(() {
         _dataCacheSize = dataCache;
         _downloadSize = download;
         _playCacheSize = playCache;
+        _downloadDirPath = dirPath;
+        _customDownloadDir = customDir;
       });
     }
   }
@@ -979,7 +1062,9 @@ class _CacheManagementSheetState extends State<_CacheManagementSheet> {
                 return RadioListTile<int>(
                   title: Text(opt.label),
                   value: opt.value,
+                  // ignore: deprecated_member_use
                   groupValue: currentLimit,
+                  // ignore: deprecated_member_use
                   onChanged: (val) {
                     Navigator.of(dialogContext).pop(val);
                   },
@@ -1061,6 +1146,57 @@ class _CacheManagementSheetState extends State<_CacheManagementSheet> {
               title: '下载文件',
               size: _formatSize(_downloadSize),
               onClear: null, // 下载文件用户主动管理，不提供一键清理
+            ),
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.folder_outlined, size: 20, color: Theme.of(context).colorScheme.primary),
+                      const SizedBox(width: 8),
+                      Text(
+                        '下载存储目录',
+                        style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
+                      ),
+                      const Spacer(),
+                      if (_customDownloadDir != null)
+                        TextButton(
+                          onPressed: () async {
+                            await widget.downloads?.setCustomDownloadDir(null);
+                            await _loadSizes();
+                            Toast.success('已恢复默认下载目录');
+                          },
+                          child: const Text('恢复默认', style: TextStyle(fontSize: 12)),
+                        ),
+                      TextButton(
+                        onPressed: () async {
+                          final selected = await FilePicker.getDirectoryPath();
+                          if (selected != null && selected.isNotEmpty) {
+                            await widget.downloads?.setCustomDownloadDir(selected);
+                            await _loadSizes();
+                            Toast.success('已更改下载目录');
+                          }
+                        },
+                        child: const Text('更改目录', style: TextStyle(fontSize: 12)),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    _downloadDirPath ?? '正在获取路径…',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
             ),
             const SizedBox(height: 10),
             _CacheItem(

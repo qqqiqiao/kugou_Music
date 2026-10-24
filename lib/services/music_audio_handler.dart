@@ -1,4 +1,6 @@
+// ignore_for_file: use_null_aware_elements
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:audio_service/audio_service.dart';
 import 'package:just_audio/just_audio.dart';
@@ -19,6 +21,11 @@ class MusicAudioHandler extends BaseAudioHandler
   Future<void> Function()? _onPrevious;
   int _queueIndex = 0;
   Song? _currentSong;
+  bool _bluetoothLyricsTitleSync = false;
+
+  void setBluetoothLyricsTitleSync(bool enabled) {
+    _bluetoothLyricsTitleSync = enabled;
+  }
 
   void attachTransportControls({
     required Future<void> Function() onNext,
@@ -56,8 +63,8 @@ class MusicAudioHandler extends BaseAudioHandler
   }
 
   @override
-  Future<void> updateQueue(List<MediaItem> newQueue) async {
-    queue.add(newQueue);
+  Future<void> updateQueue(List<MediaItem> queue) async {
+    this.queue.add(queue);
   }
 
   Future<void> setSongQueue({
@@ -84,21 +91,50 @@ class MusicAudioHandler extends BaseAudioHandler
     String? lyricText,
     String? translationText,
     String? romanizationText,
+    String? fullLyricLrc,
   }) {
     final song = _currentSong;
     if (song == null) return;
+
+    // 适配 LyricInfo 标准（ColorOS/OriginOS 锁屏岛与状态栏歌词）
+    String? lyricInfoJson;
+    if (lyricText != null && lyricText.isNotEmpty) {
+      final lyricMap = <String, dynamic>{
+        'songName': song.title,
+        'artist': song.artist,
+        if (song.albumName != null && song.albumName!.isNotEmpty)
+          'album': song.albumName,
+        'songId': song.id.isNotEmpty ? song.id : song.hash,
+        'lyric': fullLyricLrc?.isNotEmpty == true ? fullLyricLrc : lyricText,
+        if (translationText != null && translationText.isNotEmpty)
+          'translation': translationText,
+        if (romanizationText != null && romanizationText.isNotEmpty)
+          'roma': romanizationText,
+      };
+      lyricInfoJson = jsonEncode(lyricMap);
+    }
+
     final Map<String, dynamic> extras = {
       'hash': song.hash,
       'songId': song.id,
-      'lyric': ?lyricText,
-      'currentLyric': ?lyricText,
-      'translationLyric': ?translationText,
-      'romanLyric': ?romanizationText,
+      if (lyricText != null) 'lyric': lyricText,
+      if (lyricText != null) 'currentLyric': lyricText,
+      if (translationText != null) 'translationLyric': translationText,
+      if (romanizationText != null) 'romanLyric': romanizationText,
+      if (fullLyricLrc != null) 'full_lrc': fullLyricLrc,
+      if (fullLyricLrc != null) 'org.akanework.lyricinfo.FULL_LYRICS': fullLyricLrc,
+      if (lyricText != null) 'org.akanework.lyricinfo.CURRENT_LYRIC': lyricText,
+      if (lyricInfoJson != null) 'lyricInfo': lyricInfoJson,
     };
+
+    final title = (_bluetoothLyricsTitleSync && lyricText != null && lyricText.isNotEmpty)
+        ? lyricText
+        : song.title;
+
     final updated = MediaItem(
       id: song.hash.isEmpty ? song.id : song.hash,
       album: song.albumName,
-      title: song.title,
+      title: title,
       artist: song.artist,
       duration: song.duration,
       artUri: song.coverUrl == null ? null : Uri.tryParse(song.coverUrl!),

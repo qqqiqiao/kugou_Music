@@ -85,7 +85,7 @@ class ApiClient {
           await Future.delayed(Duration(milliseconds: 500 * (1 << attempt)));
           continue;
         }
-        return _processResponse(response);
+        return await _processResponse(response);
       } on http.ClientException {
         // 网络连接异常（连接超时、断网等），重试
         if (attempt < maxRetries) {
