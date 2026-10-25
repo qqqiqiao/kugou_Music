@@ -1533,6 +1533,44 @@ class _PosterPlayerPage extends StatefulWidget {
 
 class _PosterPlayerPageState extends State<_PosterPlayerPage>
     with AutomaticKeepAliveClientMixin {
+  void _openMoreMenu(BuildContext context) {
+    showSongActionSheet(
+      context: context,
+      song: widget.song,
+      actions: [
+        SongSheetAction(
+          icon: Icons.speed_rounded,
+          title: '倍速',
+          subtitle: widget.player.playbackSpeedLabel,
+          isGrid: true,
+          onTap: () => showPlaybackSpeedSheet(context: context, player: widget.player),
+        ),
+        SongSheetAction(
+          icon: Icons.high_quality_rounded,
+          title: '音质',
+          subtitle: widget.player.audioQuality.badge,
+          isGrid: true,
+          onTap: () => _showAudioQualityPicker(context, widget.player),
+        ),
+        SongSheetAction(
+          icon: Icons.graphic_eq_rounded,
+          title: '音效',
+          isGrid: true,
+          onTap: () => showAudioEffectsSheet(context: context, player: widget.player),
+        ),
+        SongSheetAction(
+          icon: Icons.bedtime_outlined,
+          title: '定时关闭',
+          subtitle: widget.player.sleepTimerRemaining == null
+              ? null
+              : formatDuration(widget.player.sleepTimerRemaining!),
+          isGrid: true,
+          onTap: () => showSleepTimerSheet(context: context, player: widget.player),
+        ),
+      ],
+    );
+  }
+
   @override
   bool get wantKeepAlive => true;
 
@@ -1562,12 +1600,16 @@ class _PosterPlayerPageState extends State<_PosterPlayerPage>
                       fit: BoxFit.scaleDown,
                       child: SizedBox.square(
                         dimension: artworkMaxWidth,
-                        child: Hero(
-                          tag: 'player_cover',
-                          child: SongArtwork(
-                            song: widget.song,
-                            size: double.infinity,
-                            borderRadius: 8,
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: () => _openMoreMenu(context),
+                          child: Hero(
+                            tag: 'player_cover',
+                            child: SongArtwork(
+                              song: widget.song,
+                              size: double.infinity,
+                              borderRadius: 8,
+                            ),
                           ),
                         ),
                       ),
@@ -1583,12 +1625,16 @@ class _PosterPlayerPageState extends State<_PosterPlayerPage>
                   constraints: BoxConstraints(maxWidth: artworkMaxWidth),
                   child: AspectRatio(
                     aspectRatio: 1,
-                    child: Hero(
-                      tag: 'player_cover',
-                      child: SongArtwork(
-                        song: widget.song,
-                        size: double.infinity,
-                        borderRadius: 8,
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () => _openMoreMenu(context),
+                      child: Hero(
+                        tag: 'player_cover',
+                        child: SongArtwork(
+                          song: widget.song,
+                          size: double.infinity,
+                          borderRadius: 8,
+                        ),
                       ),
                     ),
                   ),
