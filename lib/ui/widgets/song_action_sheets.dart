@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../design_tokens.dart';
 
 import '../../controllers/auth_controller.dart';
@@ -120,6 +121,18 @@ Future<void> showSongActionSheet({
                           ),
                         ],
                       ),
+                    ),
+                    IconButton(
+                      tooltip: '分享歌曲',
+                      icon: const Icon(Icons.share_outlined),
+                      onPressed: () {
+                        Navigator.of(sheetContext).pop();
+                        final shareText = '🎵 推荐歌曲：《${song.title}》 - ${song.artist}'
+                            '${song.albumName != null && song.albumName!.isNotEmpty ? '（专辑：${song.albumName}）' : ''}\n'
+                            '来自 KA Music';
+                        Clipboard.setData(ClipboardData(text: shareText));
+                        Toast.success('已复制歌曲分享信息到剪贴板');
+                      },
                     ),
                   ],
                 ),

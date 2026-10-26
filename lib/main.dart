@@ -13,7 +13,9 @@ import 'controllers/local_music_controller.dart';
 import 'controllers/theme_controller.dart';
 import 'core/api_client.dart';
 import 'services/cache_service.dart';
+import 'services/deep_link_service.dart';
 import 'services/device_info_service.dart';
+import 'services/log_service.dart';
 import 'services/download_service.dart';
 import 'services/music_audio_handler.dart';
 import 'services/music_api.dart';
@@ -25,6 +27,7 @@ import 'ui/widgets/toast.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await LogService.instance.init();
   await AppConfig.loadCustomBaseUrl();
 
   final client = ApiClient();
@@ -101,6 +104,7 @@ class _KaMusicAppState extends State<KaMusicApp> with WidgetsBindingObserver {
     _auth.restore();
     _downloads.initialize();
     _restorePlaybackState();
+    DeepLinkService.initialize(player: _player, api: _api);
   }
 
   /// 恢复上次的播放队列和进度。

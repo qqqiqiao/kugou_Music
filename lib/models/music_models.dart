@@ -596,12 +596,17 @@ class Song {
       artist: resolvedArtist,
       hash: hash,
       albumId: asString(json['album_id']),
-      albumAudioId: mixSongId ?? songId,
+      albumAudioId:
+          asString(json['album_audio_id']) ??
+          mixSongId ??
+          songId,
       albumName: asString(json['album_name']),
       coverUrl: normalizeImageUrl(asString(json['sizable_cover'])),
       artists: artists,
       // /top/card 的 time_length 是带小数的秒数（如 259.16）。
-      duration: durationFromTopCardSeconds(json['time_length']),
+      duration: durationFromTopCardSeconds(json['time_length']) ??
+          durationFromSeconds(json['time_length']) ??
+          durationFromMilliseconds(json['timelen']),
       releaseDate: releaseDateFromSongJson(json),
     );
   }
@@ -628,11 +633,18 @@ class Song {
           asString(json['hash_flac']) ??
           '',
       albumId: asString(json['album_id']),
-      albumAudioId: asString(json['mixsongid']) ?? songId,
+      albumAudioId:
+          asString(json['album_audio_id']) ??
+          asString(json['mixsongid']) ??
+          songId,
       albumName: asString(json['album_name']),
       coverUrl: normalizeImageUrl(asString(json['sizable_cover'])),
       artists: artists,
-      duration: durationFromSeconds(json['time_length']),
+      duration:
+          durationFromTopCardSeconds(json['time_length']) ??
+          durationFromSeconds(json['time_length']) ??
+          durationFromMilliseconds(json['timelen']) ??
+          durationFromMilliseconds(json['timelength']),
       releaseDate: releaseDateFromSongJson(json),
     );
   }

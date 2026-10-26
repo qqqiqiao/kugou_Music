@@ -962,7 +962,13 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
 
   /// 显示歌单操作 BottomSheet（收藏/删除/取消收藏）。
   void _showPlaylistActionSheet() {
-    final options = <_ActionOption>[];
+    final options = <_ActionOption>[
+      _ActionOption(
+        icon: Icons.share_outlined,
+        title: '分享歌单',
+        onTap: _sharePlaylist,
+      ),
+    ];
     if (!_isAlbum && !_isInLibrary) {
       options.add(
         _ActionOption(

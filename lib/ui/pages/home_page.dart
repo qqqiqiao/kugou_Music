@@ -196,7 +196,7 @@ class _HomePageState extends State<HomePage> {
         // 二次校验：等待期间用户可能已手动开始播放或关闭开关。
         if (!widget.player.autoPlayOnStartupEnabled) return;
         if (widget.player.isPlaying) return;
-        widget.player.playSong(songs.first, queue: songs);
+        widget.player.playSong(songs.first, queue: List<Song>.of(songs));
       });
     });
   }
@@ -441,7 +441,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _playSong(Song song, List<Song> queue) {
-    widget.player.playSong(song, queue: queue);
+    widget.player.playSong(song, queue: List<Song>.of(queue));
   }
 
   Future<void> _loadPersonalFmPreview({bool force = false}) async {

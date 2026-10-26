@@ -71,8 +71,11 @@ class PlayerController extends ChangeNotifier {
   static const _playbackModeKey = 'playback.mode';
   static const _queueSaveDebounceMs = 500;
   static const _positionSaveInterval = Duration(seconds: 5);
-  static const _listenTimeReportInterval = Duration(minutes: 30);
-  static const _listenTimeCheckInterval = Duration(minutes: 1);
+  static const _listenTimeReportInterval = Duration(minutes: 5);
+  static const _listenTimeCheckInterval = Duration(seconds: 15);
+  static const _pendingListenTimeKey = 'settings.pending_listen_time_ms';
+  static const _bluetoothLyricsTitleSyncSettingKey =
+      'settings.bluetooth_lyrics_title_sync_enabled';
   static const _defaultEqualizerLevels = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
   static const equalizerPresets = [
     AudioEffectPreset(name: '平直', levels: _defaultEqualizerLevels),
@@ -282,10 +285,11 @@ class PlayerController extends ChangeNotifier {
   bool bassBoostEnabled = false;
   double bassBoostStrength = 0.45;
   bool audioInterruptionEnabled = true;
-  bool autoResumeAfterInterruption = false;
+  bool autoResumeAfterInterruption = true;
   bool autoPlayOnDeviceConnected = false;
   bool volumeNormalizationEnabled = false;
   bool bluetoothLyricsEnabled = false;
+  bool bluetoothLyricsTitleSyncEnabled = false;
   bool desktopLyricsEnabled = false;
   DesktopLyricsSettings desktopLyricsSettings = const DesktopLyricsSettings();
   Timer? _autoResumeTimer;
@@ -355,7 +359,26 @@ class PlayerController extends ChangeNotifier {
     if (identicalIndex >= 0) {
       return identicalIndex;
     }
-    return queue.indexWhere((item) => item.hash == song.hash);
+    final identity = _songIdentity(song);
+    if (identity.isNotEmpty) {
+      final idIndex = queue.indexWhere((item) => _songIdentity(item) == identity);
+      if (idIndex >= 0) {
+        return idIndex;
+      }
+    }
+    if (song.hash.isNotEmpty) {
+      final hashIndex = queue.indexWhere((item) => item.hash == song.hash);
+      if (hashIndex >= 0) {
+        return hashIndex;
+      }
+    }
+    if (song.id.isNotEmpty) {
+      final idIndex = queue.indexWhere((item) => item.id == song.id);
+      if (idIndex >= 0) {
+        return idIndex;
+      }
+    }
+    return -1;
   }
 
   int get activeLyricIndex {
@@ -480,6 +503,19 @@ class PlayerController extends ChangeNotifier {
     errorMessage = null;
     final replacesQueue =
         queue != null && queue.isNotEmpty && !_isSameQueue(queue, this.queue);
+    final previousSong = currentSong;
+    final wasPlaying = isPlaying &&
+        audioPlayer.processingState != ProcessingState.completed &&
+        !_isHandlingCompletion;
+    if (previousSong != null && previousSong != song) {
+      if (wasPlaying) {
+        // 用户手动切歌且旧音频正在播放时，仅静音旧音频，
+        // 避免网络解析加载期间继续外放，同时保持 Audio Focus 与 WakeLock 不中断；
+        // 绝不能在后台切歌或自然播完切歌时调用 pause()，否则会导致系统释放 WakeLock 并撤销 Audio Focus，
+        // 造成黑屏切歌卡住不播、必须点亮屏幕才恢复播放。
+        unawaited(audioPlayer.setVolume(0.0));
+      }
+    }
     currentSong = song;
     if (queue != null && queue.isNotEmpty) {
       this.queue = queue;
@@ -575,8 +611,14 @@ class PlayerController extends ChangeNotifier {
         isPreparing = false;
         notifyListeners();
         unawaited(loadLyrics(song));
+        if (wasPlaying) {
+          unawaited(audioPlayer.setVolume(1.0));
+        }
         await _startPlayback();
         if (requestSerial != _playRequestSerial) return;
+        unawaited(_applyVolumeNormalization());
+        unawaited(_applyEqualizer());
+        unawaited(_applyBassBoost());
         debugPrint(
           '[KA Music][playback] request=$requestSerial started '
           'playing=${audioPlayer.playing} '
@@ -595,6 +637,10 @@ class PlayerController extends ChangeNotifier {
       if (requestSerial != _playRequestSerial) return;
       debugPrint('[KA Music][playback] request=$requestSerial failed: $error');
       errorMessage = error.toString();
+      unawaited(_audioHandler.pause());
+      if (wasPlaying) {
+        unawaited(audioPlayer.setVolume(1.0));
+      }
       isPreparing = false;
       notifyListeners();
     } finally {
@@ -947,6 +993,15 @@ class PlayerController extends ChangeNotifier {
       BluetoothLyricsService.isSupportedPlatform;
 
   /// 开关车载蓝牙歌词功能。
+  Future<void> setBluetoothLyricsTitleSyncEnabled(bool enabled) async {
+    if (bluetoothLyricsTitleSyncEnabled == enabled) return;
+    bluetoothLyricsTitleSyncEnabled = enabled;
+    _audioHandler.setBluetoothLyricsTitleSync(enabled);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_bluetoothLyricsTitleSyncSettingKey, enabled);
+    notifyListeners();
+  }
+
   Future<void> setBluetoothLyricsEnabled(bool enabled) async {
     if (bluetoothLyricsEnabled == enabled) return;
     bluetoothLyricsEnabled = enabled;
@@ -2038,7 +2093,14 @@ class PlayerController extends ChangeNotifier {
         volumeNormalizationEnabled;
     bluetoothLyricsEnabled =
         prefs.getBool(_bluetoothLyricsEnabledSettingKey) ??
-        bluetoothLyricsEnabled;
+            bluetoothLyricsEnabled;
+    final savedPendingMs = prefs.getInt(_pendingListenTimeKey) ?? 0;
+    if (savedPendingMs > 0) {
+      _pendingListenTime = Duration(milliseconds: savedPendingMs);
+    }
+    bluetoothLyricsTitleSyncEnabled =
+        prefs.getBool(_bluetoothLyricsTitleSyncSettingKey) ?? false;
+    _audioHandler.setBluetoothLyricsTitleSync(bluetoothLyricsTitleSyncEnabled);
     playbackSpeed = prefs.getDouble(_playbackSpeedSettingKey) ?? playbackSpeed;
     desktopLyricsEnabled =
         prefs.getBool(_desktopLyricsEnabledSettingKey) ?? desktopLyricsEnabled;
@@ -2174,6 +2236,9 @@ class PlayerController extends ChangeNotifier {
     if (startedAt != null) {
       _pendingListenTime += DateTime.now().difference(startedAt);
       _listenTimeStartedAt = null;
+      SharedPreferences.getInstance().then((prefs) {
+        prefs.setInt(_pendingListenTimeKey, _pendingListenTime.inMilliseconds);
+      }).catchError((_) {});
     }
     _listenTimeTimer?.cancel();
     _listenTimeTimer = null;
@@ -2184,6 +2249,9 @@ class PlayerController extends ChangeNotifier {
     _pendingListenTime = Duration.zero;
     _listenTimeTimer?.cancel();
     _listenTimeTimer = null;
+    SharedPreferences.getInstance().then((prefs) {
+      prefs.remove(_pendingListenTimeKey);
+    }).catchError((_) {});
   }
 
   Duration _trackedListeningTime() {
@@ -2217,6 +2285,8 @@ class PlayerController extends ChangeNotifier {
         _listenTimeTimer?.cancel();
         _listenTimeTimer = null;
       }
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_pendingListenTimeKey);
     } catch (error) {
       debugPrint('[KA Music][listen-time] report failed: $error');
     } finally {

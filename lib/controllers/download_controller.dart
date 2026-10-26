@@ -668,4 +668,19 @@ class DownloadController extends ChangeNotifier {
       await _persistPlayCache();
     }
   }
+
+  /// 获取当前实际生效的下载目录绝对路径。
+  Future<String> getDownloadDirPath() async {
+    final dir = await _service.downloadDir();
+    return dir.path;
+  }
+
+  /// 获取用户自定义的下载目录（若未配置返回 null）。
+  Future<String?> getCustomDownloadDir() => _service.getCustomDownloadDir();
+
+  /// 设置或清除用户自定义下载目录。
+  Future<void> setCustomDownloadDir(String? path) async {
+    await _service.setCustomDownloadDir(path);
+    notifyListeners();
+  }
 }
