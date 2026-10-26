@@ -30,8 +30,6 @@ import 'artist_detail_page.dart';
 /// 缓存中完整歌单歌曲列表的 key 后缀。
 const _fullSongsCacheSuffix = '_full';
 
-
-
 class PlaylistDetailPage extends StatefulWidget {
   const PlaylistDetailPage({
     super.key,
@@ -73,6 +71,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
   bool _isMutating = false;
   bool _isSearching = false;
   bool _isLoadingAllSongs = false;
+  bool _isStartingPlayback = false;
   bool _allSongsLoaded = false;
   String _searchQuery = '';
   _SongSortMode _sortMode = _SongSortMode.defaultOrder;
@@ -121,9 +120,9 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
               children: [
                 Text(
                   '排序方式',
-                  style: Theme.of(sheetContext).textTheme.titleLarge?.copyWith(
-                        fontWeight: FontWeight.w900,
-                      ),
+                  style: Theme.of(
+                    sheetContext,
+                  ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
                 ),
                 const SizedBox(height: 12),
                 Material(
@@ -143,8 +142,9 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                           Divider(
                             height: 1,
                             indent: 16,
-                            color: colorScheme.outlineVariant
-                                .withValues(alpha: .3),
+                            color: colorScheme.outlineVariant.withValues(
+                              alpha: .3,
+                            ),
                           ),
                       ],
                     ],
@@ -163,8 +163,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
 
   bool get _isStaticCollection => widget.initialSongs != null;
 
-  bool get _isAlbum =>
-      !_isStaticCollection && widget.playlist.isCollectedAlbum;
+  bool get _isAlbum => !_isStaticCollection && widget.playlist.isCollectedAlbum;
 
   @override
   void initState() {
@@ -182,13 +181,15 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     super.dispose();
   }
 
-  List<Song> get _filteredSongs {
+  List<Song> get _filteredSongs => _filterAndSortSongs(_songs);
+
+  List<Song> _filterAndSortSongs(Iterable<Song> songs) {
     List<Song> list;
     if (_searchQuery.isEmpty) {
-      list = List<Song>.of(_songs);
+      list = List<Song>.of(songs);
     } else {
       final q = _searchQuery.toLowerCase();
-      list = _songs.where((song) {
+      list = songs.where((song) {
         return song.title.toLowerCase().contains(q) ||
             song.artist.toLowerCase().contains(q) ||
             (song.albumName?.toLowerCase().contains(q) ?? false);
@@ -203,7 +204,10 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
         list.sort((a, b) => PinyinUtils.comparePinyin(a.artist, b.artist));
         break;
       case _SongSortMode.byAlbum:
-        list.sort((a, b) => PinyinUtils.comparePinyin(a.albumName ?? '', b.albumName ?? ''));
+        list.sort(
+          (a, b) =>
+              PinyinUtils.comparePinyin(a.albumName ?? '', b.albumName ?? ''),
+        );
         break;
       case _SongSortMode.defaultOrder:
         break;
@@ -225,7 +229,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
   }
 
   Future<void>? _allSongsFuture;
-  Future<List<Song>>? _freshPlaybackQueueFuture;
+  Future<List<Song>>? _entrySongsRefreshFuture;
 
   String get _fullSongsCacheKey => _isAlbum
       ? 'cache_album_${widget.playlist.albumId ?? widget.playlist.id}$_fullSongsCacheSuffix'
@@ -238,6 +242,19 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     return _isAlbum
         ? widget.api.albumSongs(id, page: 1, pageSize: 5000)
         : widget.api.playlistSongs(id, fetchAll: true);
+  }
+
+  List<Song> _uniqueSongs(Iterable<Song> songs) {
+    final identities = <String>{};
+    return songs.where((song) {
+      final identity = song.hash.isNotEmpty ? song.hash.toLowerCase() : song.id;
+      return identity.isNotEmpty && identities.add(identity);
+    }).toList();
+  }
+
+  /// 每次进入歌单详情页只发起一次完整歌曲刷新；页面内所有播放操作复用结果。
+  Future<List<Song>> _refreshSongsOnEntry() {
+    return _entrySongsRefreshFuture ??= _requestAllSongs().then(_uniqueSongs);
   }
 
   /// 加载完整歌单（已加载/正在加载时复用同一个 Future）。
@@ -261,13 +278,14 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
 
       List<Song> allSongs;
       if (fullCached != null) {
-        allSongs = (fullCached.data['songs'] as List? ?? const [])
-            .whereType<Map<String, dynamic>>()
-            .map(Song.fromCache)
-            .where((song) => song.hash.isNotEmpty)
-            .toList();
+        allSongs = _uniqueSongs(
+          (fullCached.data['songs'] as List? ?? const [])
+              .whereType<Map<String, dynamic>>()
+              .map(Song.fromCache)
+              .where((song) => song.hash.isNotEmpty),
+        );
       } else {
-        allSongs = await _requestAllSongs();
+        allSongs = await _refreshSongsOnEntry();
         // 写入完整歌单缓存，后续播放可直接复用
         await _cache.write(_fullSongsCacheKey, {
           'songs': allSongs.map((s) => s.toCache()).toList(),
@@ -299,7 +317,6 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
   /// 多选模式下，确保完整歌单已加载（全选/反选需针对整个歌单）。
   Future<void> _ensureAllSongsForSelection() async {
     if (_allSongsLoaded || !_hasMore) return;
-    Toast.info('正在加载完整歌单…');
     await _loadAllSongs();
     if (!mounted) return;
     if (!_allSongsLoaded) {
@@ -336,7 +353,8 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
   }
 
   bool get _isAllSelected =>
-      _songs.isNotEmpty && _songs.every((s) => _selectedHashes.contains(s.hash));
+      _songs.isNotEmpty &&
+      _songs.every((s) => _selectedHashes.contains(s.hash));
 
   /// 全选 / 取消全选（针对完整歌单）。
   Future<void> _toggleSelectAll() async {
@@ -372,8 +390,9 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
       return;
     }
     if (_batchDownloading) return;
-    final selected =
-        _songs.where((s) => _selectedHashes.contains(s.hash)).toList();
+    final selected = _songs
+        .where((s) => _selectedHashes.contains(s.hash))
+        .toList();
     if (selected.isEmpty) {
       Toast.info('请先选择歌曲');
       return;
@@ -381,8 +400,10 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
 
     setState(() => _batchDownloading = true);
     try {
-      final result =
-          await downloads.enqueueBatch(selected, widget.player.audioQuality);
+      final result = await downloads.enqueueBatch(
+        selected,
+        widget.player.audioQuality,
+      );
       final parts = <String>['已加入下载队列 ${result.enqueued} 首'];
       if (result.skipped > 0) {
         parts.add('已跳过 ${result.skipped} 首（已下载/下载中）');
@@ -403,65 +424,57 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     }
   }
 
-  /// 确保播放队列包含完整歌单内容。
-  ///
-  /// 当歌单因分页仅加载前 N 首时，对比播放队列与歌单总歌曲数量。
-  /// 若不一致则自动获取完整歌单数据（优先读缓存），保障播放队列完整。
-  /// 搜索模式下仅返回过滤后的结果。
-  Future<List<Song>> _ensureFullQueueForPlayback({bool refresh = false}) async {
-    // 搜索模式下仅播放搜索结果
-    if (_searchQuery.isNotEmpty) {
-      return _filteredSongs;
+  Future<void> _playAll() async {
+    if (_isStartingPlayback) return;
+    setState(() => _isStartingPlayback = true);
+    try {
+      // 不等待完整歌单网络请求：先用页面上已有歌曲立即建立队列并播放，
+      // 这样首曲和“下一曲”都能马上响应。
+      final startedQueue = List<Song>.of(_filteredSongs);
+      if (startedQueue.isEmpty) return;
+      await _playFromVisibleQueue(startedQueue.first, startedQueue);
+    } finally {
+      if (mounted) setState(() => _isStartingPlayback = false);
     }
-    if (refresh && !_isStaticCollection) {
-      return _freshPlaybackQueueFuture ??= _refreshFullQueueForPlayback()
-          .whenComplete(() => _freshPlaybackQueueFuture = null);
-    }
-    // 已加载全部或总数未知，直接返回当前列表
-    final totalCount = _currentPlaylist.songCount;
-    if (_allSongsLoaded || totalCount == null || _songs.length >= totalCount) {
-      return _filteredSongs;
-    }
-    // 队列数量与歌单总数不一致，需要加载完整歌单
-    Toast.info('正在加载完整歌单…');
-    await _loadAllSongs();
-    return _filteredSongs;
   }
 
-  /// “播放全部”始终从服务端重新获取完整列表并整体替换本地内容。
-  ///
-  /// 这里不读取完整歌单缓存，也不做增量追加，确保已在其他入口删除的
-  /// 歌曲不会继续残留在新的播放队列中。
-  Future<List<Song>> _refreshFullQueueForPlayback() async {
-    if (mounted) setState(() => _isLoadingAllSongs = true);
-    try {
-      final allSongs = await _requestAllSongs();
-      if (!mounted) return const [];
+  Future<void> _playFromVisibleQueue(Song song, List<Song> startedQueue) async {
+    await widget.player.playSong(song, queue: startedQueue);
+    if (!mounted) return;
+    _showPlaybackErrorIfNeeded();
 
-      setState(() {
-        _songs
-          ..clear()
-          ..addAll(allSongs);
-        _allSongsLoaded = true;
-        _hasMore = false;
-        _isLoadingAllSongs = false;
-        _loadMoreError = null;
-      });
-      try {
-        await _cache.write(_fullSongsCacheKey, {
-          'songs': allSongs.map((song) => song.toCache()).toList(),
-        });
-      } catch (_) {
-        // 缓存写入失败不应阻止已刷新到的最新歌单开始播放。
-      }
-      return _filteredSongs;
-    } catch (_) {
-      if (mounted) {
-        setState(() => _isLoadingAllSongs = false);
-        Toast.error('刷新歌单失败，请检查网络后重试');
-      }
-      return const [];
+    // 播放动作不再触发网络刷新。如果进入页面时发起的唯一一次刷新仍在
+    // 进行，仅等待并用其结果补齐当前队列。
+    final entryRefresh = _entrySongsRefreshFuture;
+    if (entryRefresh != null && !_isStaticCollection) {
+      unawaited(_syncPlayingQueueAfterEntryRefresh(startedQueue, entryRefresh));
     }
+  }
+
+  Future<void> _syncPlayingQueueAfterEntryRefresh(
+    List<Song> startedQueue,
+    Future<List<Song>> entryRefresh,
+  ) async {
+    try {
+      final refreshedSongs = await entryRefresh;
+      if (!mounted || refreshedSongs.isEmpty) return;
+      await widget.player.replaceQueueIfMatches(
+        expectedQueue: startedQueue,
+        newQueue: _filterAndSortSongs(refreshedSongs),
+      );
+    } catch (_) {
+      // 进入页面时的刷新失败不影响已经建立的本地播放队列。
+    }
+  }
+
+  void _showPlaybackErrorIfNeeded() {
+    final error = widget.player.errorMessage;
+    if (error == null || error.isEmpty) return;
+    final message = error.replaceFirst(
+      RegExp(r'^(Exception|Bad state):\s*'),
+      '',
+    );
+    Toast.error('播放失败：$message');
   }
 
   Future<void> _loadInitial() async {
@@ -515,10 +528,12 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
           _info = PlaylistSummary.fromCache(infoJson);
         }
         _songs.clear();
-        _songs.addAll((cacheData['songs'] as List? ?? const [])
-            .whereType<Map<String, dynamic>>()
-            .map(Song.fromCache)
-            .toList());
+        _songs.addAll(
+          (cacheData['songs'] as List? ?? const [])
+              .whereType<Map<String, dynamic>>()
+              .map(Song.fromCache)
+              .toList(),
+        );
         _isInitialLoading = false;
       });
       if (widget.player.currentSong != null) {
@@ -528,63 +543,50 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
 
     try {
       if (_isAlbum) {
-        final songPage = await widget.api.albumSongPage(
-          widget.playlist.albumId ?? widget.playlist.id,
-          page: 1,
-          pageSize: _pageSize,
-        );
+        final songs = await _refreshSongsOnEntry();
         if (!mounted) return;
 
         setState(() {
-          final songs = songPage.songs;
           // 增量替换：仅当网络数据与当前列表不同时才更新，
           // 避免缓存已显示后网络刷新触发 clear+addAll 导致滚动位置重置。
-          final changed = _songs.length != songs.length ||
-              !_listEquals(_songs, songs);
+          final changed =
+              _songs.length != songs.length || !_listEquals(_songs, songs);
           if (changed) {
             _songs
               ..clear()
               ..addAll(songs);
           }
-          _nextPage = 2;
-          _hasMore =
-              _songs.length < (widget.playlist.songCount ?? 1 << 31) &&
-              songPage.rawItemCount == _pageSize;
+          _nextPage = 1;
+          _hasMore = false;
+          _allSongsLoaded = true;
           _isInitialLoading = false;
         });
         await _cache.write(cacheKey, {
-          'songs': songPage.songs.map((s) => s.toCache()).toList(),
+          'songs': songs.map((s) => s.toCache()).toList(),
         });
       } else {
         final results = await Future.wait([
           widget.api.playlistInfo(widget.playlist.id),
-          widget.api.playlistSongPage(
-            widget.playlist.id,
-            page: 1,
-            pageSize: _pageSize,
-          ),
+          _refreshSongsOnEntry(),
         ]);
         if (!mounted) return;
 
         final info = results[0] as PlaylistSummary;
-        final songPage = results[1] as SongPage;
-        final songs = songPage.songs;
+        final songs = results[1] as List<Song>;
         setState(() {
           _info = info;
-          final songs = songPage.songs;
           // 增量替换：仅当网络数据与当前列表不同时才更新，
           // 避免缓存已显示后网络刷新触发 clear+addAll 导致滚动位置重置。
-          final changed = _songs.length != songs.length ||
-              !_listEquals(_songs, songs);
+          final changed =
+              _songs.length != songs.length || !_listEquals(_songs, songs);
           if (changed) {
             _songs
               ..clear()
               ..addAll(songs);
           }
-          _nextPage = 2;
-          _hasMore =
-              _songs.length < (info.songCount ?? 1 << 31) &&
-              songPage.rawItemCount == _pageSize;
+          _nextPage = 1;
+          _hasMore = false;
+          _allSongsLoaded = true;
           _isInitialLoading = false;
         });
         await _cache.write(cacheKey, {
@@ -669,7 +671,12 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
       if (!mounted) return;
 
       setState(() {
-        final songs = songPage.songs;
+        final existingHashes = _songs
+            .map((song) => song.hash.toLowerCase())
+            .toSet();
+        final songs = songPage.songs.where(
+          (song) => existingHashes.add(song.hash.toLowerCase()),
+        );
         _songs.addAll(songs);
         _nextPage++;
         _hasMore =
@@ -770,9 +777,9 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     final targetOffset = displayIndex == 0
         ? 0.0
         : (collapseDelta.clamp(0.0, 198.0) +
-            actionsHeight +
-            listTopPadding +
-            (displayIndex * rowExtent));
+              actionsHeight +
+              listTopPadding +
+              (displayIndex * rowExtent));
 
     setState(() => _locateTargetIndex = displayIndex);
 
@@ -869,9 +876,8 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
   }) {
     if (!isDownloaded) {
       return _confirm(title: '删除歌曲', message: '从当前歌单删除这首歌？').then(
-        (confirmed) => confirmed == true
-            ? _SongRemovalChoice.playlistOnly
-            : null,
+        (confirmed) =>
+            confirmed == true ? _SongRemovalChoice.playlistOnly : null,
       );
     }
 
@@ -888,9 +894,9 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
               child: const Text('取消'),
             ),
             TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(
-                _SongRemovalChoice.playlistOnly,
-              ),
+              onPressed: () => Navigator.of(
+                dialogContext,
+              ).pop(_SongRemovalChoice.playlistOnly),
               child: const Text('仅从歌单删除'),
             ),
             FilledButton(
@@ -898,9 +904,9 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                 backgroundColor: colorScheme.error,
                 foregroundColor: colorScheme.onError,
               ),
-              onPressed: () => Navigator.of(dialogContext).pop(
-                _SongRemovalChoice.playlistAndDownload,
-              ),
+              onPressed: () => Navigator.of(
+                dialogContext,
+              ).pop(_SongRemovalChoice.playlistAndDownload),
               child: const Text('同时删除'),
             ),
           ],
@@ -956,38 +962,39 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
 
   /// 显示歌单操作 BottomSheet（收藏/删除/取消收藏）。
   void _showPlaylistActionSheet() {
-    final options = <_ActionOption>[];
-    options.add(_ActionOption(
-      icon: Icons.share_outlined,
-      title: '分享歌单',
-      onTap: () {
-        final shareText = '🎵 推荐歌单：《${widget.playlist.title}》（共 ${_songs.length} 首歌）\n来自 KA Music';
-        Clipboard.setData(ClipboardData(text: shareText));
-        Toast.success('已复制歌单分享信息到剪贴板');
-      },
-    ));
+    final options = <_ActionOption>[
+      _ActionOption(
+        icon: Icons.share_outlined,
+        title: '分享歌单',
+        onTap: _sharePlaylist,
+      ),
+    ];
     if (!_isAlbum && !_isInLibrary) {
-      options.add(_ActionOption(
-        icon: Icons.bookmark_add_outlined,
-        title: '收藏歌单',
-        onTap: _collectPlaylist,
-      ));
+      options.add(
+        _ActionOption(
+          icon: Icons.bookmark_add_outlined,
+          title: '收藏歌单',
+          onTap: _collectPlaylist,
+        ),
+      );
     }
     if (_isInLibrary && !_libraryPlaylist.isLikedPlaylist) {
       final isAlbum = _libraryPlaylist.isCollectedAlbum;
       final isCreated = _libraryPlaylist.isCreatedPlaylist;
-      options.add(_ActionOption(
-        icon: isCreated
-            ? Icons.delete_outline_rounded
-            : Icons.bookmark_remove_outlined,
-        title: isAlbum
-            ? '取消收藏专辑'
-            : isCreated
-                ? '删除歌单'
-                : '取消收藏',
-        danger: isCreated,
-        onTap: _deleteOrUncollectPlaylist,
-      ));
+      options.add(
+        _ActionOption(
+          icon: isCreated
+              ? Icons.delete_outline_rounded
+              : Icons.bookmark_remove_outlined,
+          title: isAlbum
+              ? '取消收藏专辑'
+              : isCreated
+              ? '删除歌单'
+              : '取消收藏',
+          danger: isCreated,
+          onTap: _deleteOrUncollectPlaylist,
+        ),
+      );
     }
     if (options.isEmpty) return;
 
@@ -1006,10 +1013,9 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
               children: [
                 Text(
                   '歌单操作',
-                  style: Theme.of(sheetContext)
-                      .textTheme
-                      .titleLarge
-                      ?.copyWith(fontWeight: FontWeight.w900),
+                  style: Theme.of(
+                    sheetContext,
+                  ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
                 ),
                 const SizedBox(height: 12),
                 Material(
@@ -1024,8 +1030,9 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                           Divider(
                             height: 1,
                             indent: 58,
-                            color: colorScheme.outlineVariant
-                                .withValues(alpha: .3),
+                            color: colorScheme.outlineVariant.withValues(
+                              alpha: .3,
+                            ),
                           ),
                       ],
                     ],
@@ -1138,284 +1145,275 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
         extendBody: true,
         body: AdaptiveContentPadding(
           child: Stack(
-          children: [
-            // Windows 平台滚动时 sliver item 回收重建会产生大量语义节点更新，
-            // 触发 Flutter Windows 引擎 AXTree 更新 bug（console 提示
-            // "Failed to update ui::AXTree"）。在 Windows 上排除语义树消除提示，
-            // 移动端保留无障碍功能。
-            ExcludeSemantics(
-              excluding: !Platform.isWindows,
-              child: CustomScrollView(
-              controller: _scrollController,
-              slivers: [
-                SliverAppBar(
-                  pinned: true,
-                  stretch: !_isSearching,
-                  expandedHeight: _isSearching ? 0 : 198,
-                  surfaceTintColor: Colors.transparent,
-                  backgroundColor: Colors.transparent,
-                title: _isSearching
-                    ? TextField(
-                        controller: _searchController,
-                        autofocus: true,
-                        onChanged: (value) =>
-                            setState(() => _searchQuery = value),
-                        decoration: InputDecoration(
-                          hintText: _isLoadingAllSongs
-                              ? '正在加载全部歌曲…'
-                              : '搜索歌曲名或歌手名',
-                          border: InputBorder.none,
-                          hintStyle: TextStyle(
-                            color: Theme.of(
-                              context,
-                            ).colorScheme.onSurfaceVariant,
+            children: [
+              // Windows 平台滚动时 sliver item 回收重建会产生大量语义节点更新，
+              // 触发 Flutter Windows 引擎 AXTree 更新 bug（console 提示
+              // "Failed to update ui::AXTree"）。在 Windows 上排除语义树消除提示，
+              // 移动端保留无障碍功能。
+              ExcludeSemantics(
+                excluding: !Platform.isWindows,
+                child: CustomScrollView(
+                  controller: _scrollController,
+                  slivers: [
+                    SliverAppBar(
+                      pinned: true,
+                      stretch: !_isSearching,
+                      expandedHeight: _isSearching ? 0 : 198,
+                      surfaceTintColor: Colors.transparent,
+                      backgroundColor: Colors.transparent,
+                      title: _isSearching
+                          ? TextField(
+                              controller: _searchController,
+                              autofocus: true,
+                              onChanged: (value) =>
+                                  setState(() => _searchQuery = value),
+                              decoration: InputDecoration(
+                                hintText: '搜索歌曲名或歌手名',
+                                border: InputBorder.none,
+                                hintStyle: TextStyle(
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.onSurfaceVariant,
+                                ),
+                              ),
+                              style: const TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            )
+                          : GestureDetector(
+                              behavior: HitTestBehavior.opaque,
+                              onTap: () {
+                                if (_scrollController.hasClients &&
+                                    _scrollController.offset > 0) {
+                                  HapticFeedback.lightImpact();
+                                  _scrollController.animateTo(
+                                    0.0,
+                                    duration: const Duration(milliseconds: 380),
+                                    curve: Curves.easeOutCubic,
+                                  );
+                                }
+                              },
+                              child: Text(
+                                (_info ?? widget.playlist).title,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                            ),
+                      actions: [
+                        if (_selectionMode)
+                          TextButton(
+                            onPressed: _exitSelectionMode,
+                            child: const Text('取消'),
+                          )
+                        else if (!_isSearching) ...[
+                          IconButton(
+                            tooltip: '搜索',
+                            onPressed: _toggleSearch,
+                            icon: const Icon(Icons.search_rounded),
                           ),
-                        ),
-                        style: const TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
+                          IconButton(
+                            tooltip: '分享',
+                            onPressed: _sharePlaylist,
+                            icon: const Icon(Icons.share_rounded),
+                          ),
+                          if (!widget.readOnly)
+                            IconButton(
+                              tooltip: '导入歌单',
+                              onPressed: () => showImportPlaylistSheet(
+                                context: context,
+                                api: widget.api,
+                                auth: widget.auth,
+                              ),
+                              icon: const Icon(Icons.playlist_add_rounded),
+                            ),
+                          if (!widget.readOnly &&
+                              !_isAlbum &&
+                              (!_isInLibrary ||
+                                  (!_libraryPlaylist.isLikedPlaylist &&
+                                      !_libraryPlaylist.isCreatedPlaylist)))
+                            IconButton(
+                              tooltip: _isInLibrary ? '取消收藏歌单' : '收藏歌单',
+                              onPressed: _isMutating
+                                  ? null
+                                  : (_isInLibrary
+                                        ? _deleteOrUncollectPlaylist
+                                        : _collectPlaylist),
+                              icon: Icon(
+                                _isInLibrary
+                                    ? Icons.bookmark_added_rounded
+                                    : Icons.bookmark_add_outlined,
+                              ),
+                            ),
+                          if (_isMutating)
+                            const Padding(
+                              padding: EdgeInsets.only(right: 16),
+                              child: Center(
+                                child: SizedBox.square(
+                                  dimension: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2.2,
+                                  ),
+                                ),
+                              ),
+                            )
+                          else if (!widget.readOnly &&
+                              ((!_isAlbum && !_isInLibrary) ||
+                                  (_isInLibrary &&
+                                      !_libraryPlaylist.isLikedPlaylist)))
+                            IconButton(
+                              tooltip: '更多',
+                              onPressed: _showPlaylistActionSheet,
+                              icon: const Icon(Icons.more_vert_rounded),
+                            ),
+                        ] else
+                          IconButton(
+                            tooltip: '关闭搜索',
+                            onPressed: _toggleSearch,
+                            icon: const Icon(Icons.close_rounded),
+                          ),
+                      ],
+                      flexibleSpace: _isSearching
+                          ? null
+                          : FlexibleSpaceBar(
+                              stretchModes: const [StretchMode.zoomBackground],
+                              background: _HeroHeader(
+                                info: _info ?? widget.playlist,
+                              ),
+                            ),
+                    ),
+                    if (_isInitialLoading)
+                      const _PlaylistDetailSkeleton()
+                    else if (_errorMessage case final message?)
+                      SliverFillRemaining(
+                        hasScrollBody: false,
+                        child: AppErrorView(
+                          title: _isAlbum ? '专辑加载失败' : '歌单加载失败',
+                          message: message,
+                          onRetry: _loadInitial,
                         ),
                       )
-                    : GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onTap: () {
-                          if (_scrollController.hasClients &&
-                              _scrollController.offset > 0) {
-                            HapticFeedback.lightImpact();
-                            _scrollController.animateTo(
-                              0.0,
-                              duration: const Duration(milliseconds: 380),
-                              curve: Curves.easeOutCubic,
-                            );
-                          }
-                        },
-                        child: Text(
-                          (_info ?? widget.playlist).title,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
-                      ),
-                actions: [
-                  if (_selectionMode)
-                    TextButton(
-                      onPressed: _exitSelectionMode,
-                      child: const Text('取消'),
-                    )
-                  else if (!_isSearching) ...[
-                    IconButton(
-                      tooltip: '搜索',
-                      onPressed: _toggleSearch,
-                      icon: const Icon(Icons.search_rounded),
-                    ),
-                    IconButton(
-                      tooltip: '分享',
-                      onPressed: _sharePlaylist,
-                      icon: const Icon(Icons.share_rounded),
-                    ),
-                    if (!widget.readOnly)
-                      IconButton(
-                        tooltip: '导入歌单',
-                        onPressed: () => showImportPlaylistSheet(
-                          context: context,
-                          api: widget.api,
-                          auth: widget.auth,
-                        ),
-                        icon: const Icon(Icons.playlist_add_rounded),
-                      ),
-                    if (!widget.readOnly &&
-                        !_isAlbum &&
-                        (!_isInLibrary ||
-                            (!_libraryPlaylist.isLikedPlaylist &&
-                                !_libraryPlaylist.isCreatedPlaylist)))
-                      IconButton(
-                        tooltip: _isInLibrary ? '取消收藏歌单' : '收藏歌单',
-                        onPressed: _isMutating
-                            ? null
-                            : (_isInLibrary
-                                  ? _deleteOrUncollectPlaylist
-                                  : _collectPlaylist),
-                        icon: Icon(
-                          _isInLibrary
-                              ? Icons.bookmark_added_rounded
-                              : Icons.bookmark_add_outlined,
-                        ),
-                      ),
-                    if (_isMutating)
-                      const Padding(
-                        padding: EdgeInsets.only(right: 16),
-                        child: Center(
-                          child: SizedBox.square(
-                            dimension: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2.2),
-                          ),
-                        ),
-                      )
-                    else if (!widget.readOnly)
-                      IconButton(
-                        tooltip: '更多',
-                        onPressed: _showPlaylistActionSheet,
-                        icon: const Icon(Icons.more_vert_rounded),
-                      ),
-                  ] else
-                    IconButton(
-                      tooltip: '关闭搜索',
-                      onPressed: _toggleSearch,
-                      icon: const Icon(Icons.close_rounded),
-                    ),
-                ],
-                flexibleSpace: _isSearching
-                    ? null
-                    : FlexibleSpaceBar(
-                        stretchModes: const [StretchMode.zoomBackground],
-                        background: _HeroHeader(info: _info ?? widget.playlist),
-                      ),
-              ),
-              if (_isInitialLoading)
-                const _PlaylistDetailSkeleton()
-              else if (_errorMessage case final message?)
-                SliverFillRemaining(
-                  hasScrollBody: false,
-                  child: AppErrorView(
-                    title: _isAlbum ? '专辑加载失败' : '歌单加载失败',
-                    message: message,
-                    onRetry: _loadInitial,
-                  ),
-                )
-              else ...[
-                SliverToBoxAdapter(
-                  child: _Actions(
-                    count: _allSongsLoaded
-                        ? _songs.length
-                        : _info?.songCount ?? _songs.length,
-                    loadedCount: _songs.length,
-                    sortLabel: _sortModeLabel,
-                    onSortTap: () => _showSortSheet(context),
-                    onPlay: _filteredSongs.isEmpty
-                        ? null
-                        : () async {
-                            final queue = await _ensureFullQueueForPlayback(
-                              refresh: true,
-                            );
-                            if (!mounted || queue.isEmpty) return;
-                            widget.player.playSong(
-                              queue.first,
-                              queue: List<Song>.of(queue),
-                            );
-                          },
-                    searchQuery: _searchQuery,
-                    searchResultCount: _searchQuery.isNotEmpty
-                        ? _filteredSongs.length
-                        : null,
-                    selectionMode: _selectionMode,
-                    selectedCount: _selectedCount,
-                    onSelectTap: _filteredSongs.isEmpty
-                        ? null
-                        : _enterSelectionMode,
-                  ),
-                ),
-                if (_isLoadingAllSongs)
-                  const SliverToBoxAdapter(
-                    child: Padding(
-                      padding: EdgeInsets.symmetric(vertical: 40),
-                      child: Center(
-                        child: Column(
-                          children: [
-                            CircularProgressIndicator(strokeWidth: 2.4),
-                            SizedBox(height: 12),
-                            Text('正在加载全部歌曲…'),
-                          ],
-                        ),
-                      ),
-                    ),
-                  )
-                else if (_searchQuery.isNotEmpty && _filteredSongs.isEmpty)
-                  const SliverToBoxAdapter(child: _SearchEmpty())
-                else ...[
-                  SliverPadding(
-                    padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
-                    sliver: SliverList.separated(
-                      itemCount: _filteredSongs.length,
-                      separatorBuilder: (_, _) => const SizedBox(height: 2),
-                      itemBuilder: (context, index) {
-                        final song = _filteredSongs[index];
-                        return _SongRow(
-                          key: _locateTargetIndex == index
-                              ? _locateRowKey
+                    else ...[
+                      SliverToBoxAdapter(
+                        child: _Actions(
+                          count: _allSongsLoaded
+                              ? _songs.length
+                              : _info?.songCount ?? _songs.length,
+                          loadedCount: _songs.length,
+                          sortLabel: _sortModeLabel,
+                          onSortTap: () => _showSortSheet(context),
+                          onPlay: _filteredSongs.isEmpty || _isStartingPlayback
+                              ? null
+                              : _playAll,
+                          searchQuery: _searchQuery,
+                          searchResultCount: _searchQuery.isNotEmpty
+                              ? _filteredSongs.length
                               : null,
-                          song: song,
-                          index: index + 1,
-                          player: widget.player,
-                          canDelete: _canEdit,
                           selectionMode: _selectionMode,
-                          selected: _selectedHashes.contains(song.hash),
-                          onToggleSelect: () => _toggleSongSelection(song),
-                          onTap: () async {
-                            final queue = await _ensureFullQueueForPlayback();
-                            if (!mounted || queue.isEmpty) return;
-                            widget.player.playSong(
-                              song,
-                              queue: List<Song>.of(queue),
-                            );
-                          },
-                          onAddToPlaylist: () => _addSongToPlaylist(song),
-                          onDelete: () => _removeSong(song),
-                          onViewArtist: () => _openArtist(song),
-                        );
-                      },
-                    ),
-                  ),
-                  if (_searchQuery.isEmpty)
-                    SliverToBoxAdapter(
-                      child: _LoadMoreFooter(
-                        hasMore: _hasMore,
-                        isLoading: _isLoadingMore,
-                        errorMessage: _loadMoreError,
-                        onRetry: _loadMore,
+                          selectedCount: _selectedCount,
+                          onSelectTap: _filteredSongs.isEmpty
+                              ? null
+                              : _enterSelectionMode,
+                        ),
                       ),
-                    ),
-                  if (_searchQuery.isEmpty && _similarPlaylists.isNotEmpty)
-                    SliverToBoxAdapter(
-                      child: _SimilarPlaylistsSection(
-                        playlists: _similarPlaylists,
-                        onTap: _openSimilarPlaylist,
-                      ),
-                    ),
-                ],
-              ],
+                      if (_isLoadingAllSongs)
+                        const SliverToBoxAdapter(
+                          child: Padding(
+                            padding: EdgeInsets.symmetric(horizontal: 16),
+                            child: LinearProgressIndicator(minHeight: 2),
+                          ),
+                        )
+                      else if (_searchQuery.isNotEmpty &&
+                          _filteredSongs.isEmpty)
+                        const SliverToBoxAdapter(child: _SearchEmpty()),
+                      if (_filteredSongs.isNotEmpty) ...[
+                        SliverPadding(
+                          padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
+                          sliver: SliverList.separated(
+                            itemCount: _filteredSongs.length,
+                            separatorBuilder: (_, _) =>
+                                const SizedBox(height: 2),
+                            itemBuilder: (context, index) {
+                              final song = _filteredSongs[index];
+                              return _SongRow(
+                                key: _locateTargetIndex == index
+                                    ? _locateRowKey
+                                    : null,
+                                song: song,
+                                index: index + 1,
+                                player: widget.player,
+                                canDelete: _canEdit,
+                                selectionMode: _selectionMode,
+                                selected: _selectedHashes.contains(song.hash),
+                                onToggleSelect: () =>
+                                    _toggleSongSelection(song),
+                                onTap: () async {
+                                  final queue = List<Song>.of(_filteredSongs);
+                                  if (queue.isEmpty) return;
+                                  await _playFromVisibleQueue(song, queue);
+                                },
+                                onAddToPlaylist: () => _addSongToPlaylist(song),
+                                onDelete: () => _removeSong(song),
+                                onViewArtist: () => _openArtist(song),
+                              );
+                            },
+                          ),
+                        ),
+                        if (_searchQuery.isEmpty)
+                          SliverToBoxAdapter(
+                            child: _LoadMoreFooter(
+                              hasMore: _hasMore,
+                              isLoading: _isLoadingMore,
+                              errorMessage: _loadMoreError,
+                              onRetry: _loadMore,
+                            ),
+                          ),
+                        if (_searchQuery.isEmpty &&
+                            _similarPlaylists.isNotEmpty)
+                          SliverToBoxAdapter(
+                            child: _SimilarPlaylistsSection(
+                              playlists: _similarPlaylists,
+                              onTap: _openSimilarPlaylist,
+                            ),
+                          ),
+                      ],
+                    ],
+                  ],
+                ),
+              ),
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: bottomInset + 10,
+                child: _selectionMode
+                    ? _SelectionBar(
+                        selectedCount: _selectedCount,
+                        allSelected: _isAllSelected,
+                        downloading: _batchDownloading,
+                        onToggleAll: _toggleSelectAll,
+                        onInvert: _toggleInvertSelection,
+                        onDownload: _selectedCount == 0
+                            ? null
+                            : _downloadSelected,
+                      )
+                    : MiniPlayer(player: widget.player, auth: widget.auth),
+              ),
+              AnimatedPositioned(
+                duration: const Duration(milliseconds: 220),
+                curve: Curves.easeOutCubic,
+                right: 20,
+                bottom: bottomInset + (_selectionMode ? 78 : 18),
+                child: ScrollToTopButton(controller: _scrollController),
+              ),
             ],
           ),
-          ),
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: bottomInset + 10,
-            child: _selectionMode
-                ? _SelectionBar(
-                    selectedCount: _selectedCount,
-                    allSelected: _isAllSelected,
-                    downloading: _batchDownloading,
-                    onToggleAll: _toggleSelectAll,
-                    onInvert: _toggleInvertSelection,
-                    onDownload: _selectedCount == 0 ? null : _downloadSelected,
-                  )
-                : MiniPlayer(player: widget.player, auth: widget.auth),
-          ),
-          AnimatedPositioned(
-            duration: const Duration(milliseconds: 220),
-            curve: Curves.easeOutCubic,
-            right: 20,
-            bottom: bottomInset + (_selectionMode ? 78 : 18),
-            child: ScrollToTopButton(controller: _scrollController),
-          ),
-        ],
+        ),
       ),
-    ),
-    ),
-  );
+    );
   }
 }
 
@@ -1444,7 +1442,6 @@ class _SimilarPlaylistsSection extends StatelessWidget {
     );
   }
 }
-
 
 class _SimilarPlaylistCard extends StatelessWidget {
   const _SimilarPlaylistCard({required this.playlist, required this.onTap});
@@ -1530,9 +1527,9 @@ class _ActionOptionTile extends StatelessWidget {
               child: Text(
                 option.title,
                 style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                      color: color,
-                      fontWeight: FontWeight.w600,
-                    ),
+                  color: color,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
             ),
           ],
@@ -1555,66 +1552,65 @@ class _HeroHeader extends StatelessWidget {
       bottom: false,
       child: Padding(
         padding: const EdgeInsets.fromLTRB(18, 0, 18, 12),
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              final compact = constraints.maxWidth < 380;
-              final artworkSize = compact ? 90.0 : 102.0;
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final compact = constraints.maxWidth < 380;
+            final artworkSize = compact ? 90.0 : 102.0;
 
-              return Row(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  Artwork(
-                    url: info.coverUrl,
-                    size: artworkSize,
-                    borderRadius: 16,
+            return Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Artwork(
+                  url: info.coverUrl,
+                  size: artworkSize,
+                  borderRadius: 16,
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      Text(
+                        info.title,
+                        maxLines: 3,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w900,
+                          height: 1.05,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        info.subtitle?.trim().isNotEmpty == true
+                            ? info.subtitle!
+                            : _detailMeta(info),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          color: colorScheme.onSurfaceVariant,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 5),
+                      Text(
+                        _detailMeta(info),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
                   ),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisAlignment: MainAxisAlignment.end,
-                      children: [
-                        Text(
-                          info.title,
-                          maxLines: 3,
-                          overflow: TextOverflow.ellipsis,
-                          style: Theme.of(context).textTheme.titleLarge
-                              ?.copyWith(
-                                fontSize: 18,
-                                fontWeight: FontWeight.w900,
-                                height: 1.05,
-                              ),
-                        ),
-                        const SizedBox(height: 6),
-                        Text(
-                          info.subtitle?.trim().isNotEmpty == true
-                              ? info.subtitle!
-                              : _detailMeta(info),
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: Theme.of(context).textTheme.bodyMedium
-                              ?.copyWith(
-                                color: colorScheme.onSurfaceVariant,
-                                fontWeight: FontWeight.w600,
-                              ),
-                        ),
-                        const SizedBox(height: 5),
-                        Text(
-                          _detailMeta(info),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: Theme.of(context).textTheme.bodySmall
-                              ?.copyWith(color: colorScheme.onSurfaceVariant),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              );
-            },
-          ),
+                ),
+              ],
+            );
+          },
         ),
-      );
+      ),
+    );
   }
 }
 
@@ -1644,7 +1640,6 @@ class _PlaylistDetailSkeleton extends StatelessWidget {
     );
   }
 }
-
 
 class _PlaylistSkeletonSongRow extends StatelessWidget {
   const _PlaylistSkeletonSongRow();
@@ -1741,9 +1736,9 @@ class _Actions extends StatelessWidget {
                 Text(
                   '已选择 $selectedCount 首',
                   style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                        color: colorScheme.primary,
-                        fontWeight: FontWeight.w800,
-                      ),
+                    color: colorScheme.primary,
+                    fontWeight: FontWeight.w800,
+                  ),
                 ),
               ],
             )
@@ -1756,7 +1751,10 @@ class _Actions extends StatelessWidget {
                         TextButton.icon(
                           onPressed: onSortTap,
                           style: TextButton.styleFrom(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 4,
+                            ),
                             minimumSize: Size.zero,
                             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                           ),
@@ -1779,10 +1777,11 @@ class _Actions extends StatelessWidget {
                               : loadedCount >= count
                               ? '$count 首歌曲'
                               : '已加载 $loadedCount / $count 首',
-                          style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                            color: colorScheme.onSurfaceVariant,
-                            fontWeight: FontWeight.w700,
-                          ),
+                          style: Theme.of(context).textTheme.bodyLarge
+                              ?.copyWith(
+                                color: colorScheme.onSurfaceVariant,
+                                fontWeight: FontWeight.w700,
+                              ),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                         ),
@@ -1796,7 +1795,10 @@ class _Actions extends StatelessWidget {
                     TextButton.icon(
                       onPressed: onSelectTap,
                       style: TextButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 4,
+                        ),
                         minimumSize: Size.zero,
                         tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                       ),
@@ -1837,7 +1839,6 @@ class _Actions extends StatelessWidget {
   }
 }
 
-
 class _SearchEmpty extends StatelessWidget {
   const _SearchEmpty();
 
@@ -1866,7 +1867,6 @@ class _SearchEmpty extends StatelessWidget {
     );
   }
 }
-
 
 class _LoadMoreFooter extends StatelessWidget {
   const _LoadMoreFooter({
@@ -1965,183 +1965,246 @@ class _SongRow extends StatelessWidget {
           final active = player.currentSong?.hash == song.hash;
           final activeColor = colorScheme.primary;
           return InkWell(
-          borderRadius: BorderRadius.circular(AppRadius.lg),
-          onTap: selectionMode ? onToggleSelect : onTap,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 180),
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 9),
-            decoration: BoxDecoration(
-              color: active
-                  ? activeColor.withValues(alpha: .09)
-                  : Colors.transparent,
-              borderRadius: BorderRadius.circular(AppRadius.lg),
-            ),
-            child: Row(
-              children: [
-                if (selectionMode) ...[
-                  Checkbox(
-                    value: selected,
-                    onChanged: (_) => onToggleSelect?.call(),
-                    visualDensity: VisualDensity.compact,
-                  ),
-                  const SizedBox(width: 2),
-                ],
-                SizedBox.square(
-                  dimension: 50,
-                  child: Stack(
-                    children: [
-                      SongArtwork(song: song, size: 50, borderRadius: 9),
-                      Positioned(
-                        left: 4,
-                        top: 4,
-                        child: DecoratedBox(
-                          decoration: BoxDecoration(
-                            color: Colors.black.withValues(alpha: .42),
-                            borderRadius: BorderRadius.circular(AppRadius.xs),
-                          ),
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 5,
-                              vertical: 1,
-                            ),
-                            child: Text(
-                              '$index',
-                              style: Theme.of(context).textTheme.labelSmall
-                                  ?.copyWith(
-                                    color: Colors.white.withValues(alpha: .78),
-                                    fontWeight: FontWeight.w800,
-                                    height: 1.1,
-                                  ),
-                            ),
-                          ),
-                        ),
-                      ),
-                      if (active)
+            borderRadius: BorderRadius.circular(AppRadius.lg),
+            onTap: selectionMode ? onToggleSelect : onTap,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 180),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 9),
+              decoration: BoxDecoration(
+                color: active
+                    ? activeColor.withValues(alpha: .09)
+                    : Colors.transparent,
+                borderRadius: BorderRadius.circular(AppRadius.lg),
+              ),
+              child: Row(
+                children: [
+                  if (selectionMode) ...[
+                    Checkbox(
+                      value: selected,
+                      onChanged: (_) => onToggleSelect?.call(),
+                      visualDensity: VisualDensity.compact,
+                    ),
+                    const SizedBox(width: 2),
+                  ],
+                  SizedBox.square(
+                    dimension: 50,
+                    child: Stack(
+                      children: [
+                        SongArtwork(song: song, size: 50, borderRadius: 9),
                         Positioned(
-                          right: 4,
-                          bottom: 4,
+                          left: 4,
+                          top: 4,
                           child: DecoratedBox(
                             decoration: BoxDecoration(
-                              color: colorScheme.surface.withValues(alpha: .9),
-                              borderRadius: BorderRadius.circular(AppRadius.sm),
+                              color: Colors.black.withValues(alpha: .42),
+                              borderRadius: BorderRadius.circular(AppRadius.xs),
                             ),
                             child: Padding(
-                              padding: const EdgeInsets.all(3),
-                              child: NowPlayingBadge(
-                                active: active,
-                                playing: player.isPlaying,
-                                color: activeColor,
-                                size: 14,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 5,
+                                vertical: 1,
+                              ),
+                              child: Text(
+                                '$index',
+                                style: Theme.of(context).textTheme.labelSmall
+                                    ?.copyWith(
+                                      color: Colors.white.withValues(
+                                        alpha: .78,
+                                      ),
+                                      fontWeight: FontWeight.w800,
+                                      height: 1.1,
+                                    ),
                               ),
                             ),
                           ),
                         ),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      active
-                          ? MarqueeText(
-                              text: song.title,
-                              style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                                color: activeColor,
-                                fontWeight: FontWeight.w800,
+                        if (active)
+                          Positioned(
+                            right: 4,
+                            bottom: 4,
+                            child: DecoratedBox(
+                              decoration: BoxDecoration(
+                                color: colorScheme.surface.withValues(
+                                  alpha: .9,
+                                ),
+                                borderRadius: BorderRadius.circular(
+                                  AppRadius.sm,
+                                ),
                               ),
-                            )
-                          : Text(
-                              song.title,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                                fontWeight: FontWeight.w800,
+                              child: Padding(
+                                padding: const EdgeInsets.all(3),
+                                child: NowPlayingBadge(
+                                  active: active,
+                                  playing: player.isPlaying,
+                                  color: activeColor,
+                                  size: 14,
+                                ),
                               ),
                             ),
-                      const SizedBox(height: 3),
-                      Text(
-                        song.artist,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          color: active
-                              ? activeColor.withValues(alpha: .72)
-                              : colorScheme.onSurfaceVariant,
+                          ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        active
+                            ? MarqueeText(
+                                text: song.title,
+                                style: Theme.of(context).textTheme.titleSmall
+                                    ?.copyWith(
+                                      color: activeColor,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                              )
+                            : Text(
+                                song.title,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: Theme.of(context).textTheme.titleSmall
+                                    ?.copyWith(fontWeight: FontWeight.w800),
+                              ),
+                        const SizedBox(height: 3),
+                        Row(
+                          children: [
+                            Flexible(
+                              fit: FlexFit.loose,
+                              child: Text(
+                                song.artist,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: Theme.of(context).textTheme.bodyMedium
+                                    ?.copyWith(
+                                      color: active
+                                          ? activeColor.withValues(alpha: .72)
+                                          : colorScheme.onSurfaceVariant,
+                                    ),
+                              ),
+                            ),
+                            if (!selectionMode) ...[
+                              const SizedBox(width: 6),
+                              _DownloadedIndicator(player: player, song: song),
+                            ],
+                          ],
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
-                ),
-                const SizedBox(width: 10),
-                Text(
-                  formatDuration(song.duration),
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: active
-                        ? activeColor.withValues(alpha: .72)
-                        : colorScheme.onSurfaceVariant,
-                    fontWeight: FontWeight.w600,
+                  const SizedBox(width: 10),
+                  Text(
+                    formatDuration(song.duration),
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: active
+                          ? activeColor.withValues(alpha: .72)
+                          : colorScheme.onSurfaceVariant,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
-                ),
-                if (!selectionMode)
-                  IconButton(
-                    tooltip: '更多',
-                    onPressed: () {
-                      showSongActionSheet(
-                        context: context,
-                        song: song,
-                        actions: [
-                          SongSheetAction(
-                            icon: Icons.queue_music_rounded,
-                            title: '下一首播放',
-                            onTap: () => addSongToQueueWithFeedback(
-                              context: context,
-                              player: player,
-                              song: song,
-                            ),
-                          ),
-                          SongSheetAction(
-                            icon: Icons.playlist_add_rounded,
-                            title: '添加到歌单',
-                            onTap: onAddToPlaylist,
-                          ),
-                          SongSheetAction(
-                            icon: Icons.person_rounded,
-                            title: '查看歌手',
-                            onTap: onViewArtist,
-                          ),
-                          if (canDelete)
+                  if (!selectionMode)
+                    IconButton(
+                      tooltip: '更多',
+                      onPressed: () {
+                        showSongActionSheet(
+                          context: context,
+                          song: song,
+                          actions: [
                             SongSheetAction(
-                              icon: Icons.delete_outline_rounded,
-                              title: '从歌单删除',
-                              danger: true,
-                              onTap: onDelete,
-                            ),
-                          if (player.downloadController != null)
-                            SongSheetAction(
-                              icon: player.downloadController!.isDownloaded(song)
-                                  ? Icons.download_done_rounded
-                                  : Icons.download_rounded,
-                              title: player.downloadController!.isDownloaded(song)
-                                  ? '已下载'
-                                  : '下载',
-                              onTap: () => player.downloadController!.download(
-                                song,
-                                player.audioQuality,
+                              icon: Icons.queue_music_rounded,
+                              title: '下一首播放',
+                              onTap: () => addSongToQueueWithFeedback(
+                                context: context,
+                                player: player,
+                                song: song,
                               ),
                             ),
-                        ],
-                      );
-                    },
-                    icon: const Icon(Icons.more_horiz_rounded),
-                  ),
-              ],
+                            SongSheetAction(
+                              icon: Icons.playlist_add_rounded,
+                              title: '添加到歌单',
+                              onTap: onAddToPlaylist,
+                            ),
+                            SongSheetAction(
+                              icon: Icons.person_rounded,
+                              title: '查看歌手',
+                              onTap: onViewArtist,
+                            ),
+                            if (canDelete)
+                              SongSheetAction(
+                                icon: Icons.delete_outline_rounded,
+                                title: '从歌单删除',
+                                danger: true,
+                                onTap: onDelete,
+                              ),
+                            if (player.downloadController != null)
+                              SongSheetAction(
+                                icon:
+                                    player.downloadController!.isDownloaded(
+                                      song,
+                                    )
+                                    ? Icons.download_done_rounded
+                                    : Icons.download_rounded,
+                                title:
+                                    player.downloadController!.isDownloaded(
+                                      song,
+                                    )
+                                    ? '已下载'
+                                    : '下载',
+                                onTap: () => player.downloadController!
+                                    .download(song, player.audioQuality),
+                              ),
+                          ],
+                        );
+                      },
+                      icon: const Icon(Icons.more_horiz_rounded),
+                    ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _DownloadedIndicator extends StatelessWidget {
+  const _DownloadedIndicator({required this.player, required this.song});
+
+  final PlayerController player;
+  final Song song;
+
+  @override
+  Widget build(BuildContext context) {
+    final downloads = player.downloadController;
+    if (downloads == null) return const SizedBox.shrink();
+
+    return AnimatedBuilder(
+      animation: downloads,
+      builder: (context, _) {
+        if (!downloads.isDownloaded(song)) {
+          return const SizedBox.shrink();
+        }
+        return Tooltip(
+          message: '已下载',
+          child: Material(
+            color: const Color(0x1A24C768),
+            shape: const CircleBorder(),
+            child: InkWell(
+              customBorder: const CircleBorder(),
+              onTap: () => Toast.info('已下载，播放时将优先使用本地文件'),
+              child: const SizedBox.square(
+                dimension: 16,
+                child: Icon(
+                  Icons.check_rounded,
+                  size: 12,
+                  color: Color(0xFF24C768),
+                ),
+              ),
             ),
           ),
         );
-        },
-      ),
+      },
     );
   }
 }
@@ -2198,9 +2261,9 @@ class _SelectionBar extends StatelessWidget {
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: colorScheme.onSurfaceVariant,
-                      fontWeight: FontWeight.w700,
-                    ),
+                  color: colorScheme.onSurfaceVariant,
+                  fontWeight: FontWeight.w700,
+                ),
               ),
             ),
             FilledButton.icon(
@@ -2211,9 +2274,7 @@ class _SelectionBar extends StatelessWidget {
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
                   : const Icon(Icons.download_rounded, size: 18),
-              label: Text(
-                downloading ? '加入中…' : '下载($selectedCount)',
-              ),
+              label: Text(downloading ? '加入中…' : '下载($selectedCount)'),
               style: FilledButton.styleFrom(
                 shape: const StadiumBorder(),
                 padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -2226,17 +2287,9 @@ class _SelectionBar extends StatelessWidget {
   }
 }
 
-enum _SongSortMode {
-  defaultOrder,
-  byTitle,
-  byArtist,
-  byAlbum,
-}
+enum _SongSortMode { defaultOrder, byTitle, byArtist, byAlbum }
 
-enum _SongRemovalChoice {
-  playlistOnly,
-  playlistAndDownload,
-}
+enum _SongRemovalChoice { playlistOnly, playlistAndDownload }
 
 class _SortOptionTile extends StatelessWidget {
   const _SortOptionTile({
@@ -2262,24 +2315,19 @@ class _SortOptionTile extends StatelessWidget {
               child: Text(
                 label,
                 style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                      color: selected ? colorScheme.primary : null,
-                      fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-                    ),
+                  color: selected ? colorScheme.primary : null,
+                  fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                ),
               ),
             ),
             if (selected)
-              Icon(
-                Icons.check_rounded,
-                size: 20,
-                color: colorScheme.primary,
-              ),
+              Icon(Icons.check_rounded, size: 20, color: colorScheme.primary),
           ],
         ),
       ),
     );
   }
 }
-
 
 String _detailMeta(PlaylistSummary info) {
   if (info.isCollectedAlbum) {
