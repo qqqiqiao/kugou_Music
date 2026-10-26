@@ -109,24 +109,39 @@ class MusicAudioHandler extends BaseAudioHandler
     mediaItem.add(updated);
   }
 
+  int _playSessionId = 0;
+
   @override
   Future<void> play() async {
-    final session = await AudioSession.instance;
+    final sessionId = ++_playSessionId;
     Object? lastError;
+
+    final isMobileOrMac =
+        !kIsWeb &&
+        (defaultTargetPlatform == TargetPlatform.android ||
+            defaultTargetPlatform == TargetPlatform.iOS ||
+            defaultTargetPlatform == TargetPlatform.macOS);
 
     // iOS 首次设置音源后，just_audio 可能短暂发出 playing=true，
     // 随后因音频会话激活还未稳定而回落为 false。只等到第一个 true
     // 会把这种情况误判为自动播放成功，而用户再点一次就能播放。
     // 在这里确认播放状态能短暂保持；若首次回落，重新激活会话并重试。
     for (var attempt = 0; attempt < 3; attempt++) {
+      if (sessionId != _playSessionId) return;
       try {
         debugPrint(
           '[KA Music][playback] start-attempt=${attempt + 1} '
           'state=${audioPlayer.processingState.name}',
         );
-        if (!await session.setActive(true)) {
-          throw StateError('无法启动系统音频会话');
+        if (isMobileOrMac) {
+          try {
+            final session = await AudioSession.instance;
+            await session.setActive(true);
+          } catch (e) {
+            debugPrint('[KA Music][playback] audio session setActive failed: $e');
+          }
         }
+        if (sessionId != _playSessionId) return;
 
         final playback = audioPlayer.play();
         await Future.any<void>([
@@ -134,15 +149,19 @@ class MusicAudioHandler extends BaseAudioHandler
               .firstWhere((state) => state.playing)
               .then<void>((_) {}),
           playback.then<void>((_) {
-            if (!audioPlayer.playing) {
+            if (!audioPlayer.playing && sessionId == _playSessionId) {
               throw StateError('播放器未保持播放状态');
             }
           }),
         ]).timeout(const Duration(seconds: 3));
 
+        if (sessionId != _playSessionId) return;
+
         // playing 在 play() 后会立即变为 true，稍后再检查一次，
         // 避免把瞬时变化误当成已经真正启播。
         await Future<void>.delayed(const Duration(milliseconds: 500));
+        if (sessionId != _playSessionId) return;
+
         if (audioPlayer.playing) {
           debugPrint(
             '[KA Music][playback] start-attempt=${attempt + 1} stable',
@@ -151,24 +170,31 @@ class MusicAudioHandler extends BaseAudioHandler
         }
         lastError = StateError('播放启动后立即停止');
       } catch (error) {
+        if (sessionId != _playSessionId) return;
         lastError = error;
         debugPrint(
           '[KA Music][playback] start-attempt=${attempt + 1} failed: $error',
         );
       }
 
+      if (sessionId != _playSessionId) return;
       if (attempt < 2) {
         await Future<void>.delayed(const Duration(milliseconds: 200));
       }
     }
 
-    throw StateError('无法自动开始播放：${lastError ?? '未知错误'}');
+    if (sessionId == _playSessionId) {
+      throw StateError('无法自动开始播放：${lastError ?? '未知错误'}');
+    }
   }
 
   @override
   Future<void> pause() async {
+    _playSessionId++;
     await audioPlayer.pause();
   }
+
+
 
   @override
   Future<void> seek(Duration position) async {
@@ -187,6 +213,7 @@ class MusicAudioHandler extends BaseAudioHandler
 
   @override
   Future<void> stop() async {
+    _playSessionId++;
     await audioPlayer.stop();
   }
 
