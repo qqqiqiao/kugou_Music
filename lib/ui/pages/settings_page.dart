@@ -17,6 +17,7 @@ import '../widgets/audio_effects_sheet.dart';
 import '../widgets/audio_quality_sheet.dart';
 import '../widgets/toast.dart';
 import 'about_page.dart';
+import 'log_viewer_page.dart';
 import 'audio_interruption_settings_page.dart';
 import 'desktop_lyrics_settings_page.dart';
 import 'personalization_settings_page.dart';
@@ -610,6 +611,18 @@ class SettingsPage extends StatelessWidget {
                 const SizedBox(height: 8),
                 _SettingsCard(
                   children: [
+                    _SettingsTile(
+                      icon: Icons.receipt_long_rounded,
+                      iconColor: colorScheme.primary,
+                      title: '运行日志与诊断',
+                      subtitle: '查看实时日志、排查异常及导出日志文件',
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => const LogViewerPage(),
+                        ),
+                      ),
+                    ),
+                    _SettingsDivider(),
                     _SettingsTile(
                       icon: Icons.info_outline_rounded,
                       iconColor: colorScheme.primary,
