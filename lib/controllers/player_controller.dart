@@ -490,9 +490,17 @@ class PlayerController extends ChangeNotifier {
     final replacesQueue =
         queue != null && queue.isNotEmpty && !_isSameQueue(queue, this.queue);
     final previousSong = currentSong;
-    // 切歌时先暂停正在播放的旧音频，避免网络加载期间旧歌曲继续外放或报错造成状态错乱
+    final wasPlaying = isPlaying &&
+        audioPlayer.processingState != ProcessingState.completed &&
+        !_isHandlingCompletion;
     if (previousSong != null && previousSong != song) {
-      unawaited(_audioHandler.pause());
+      if (wasPlaying) {
+        // 用户手动切歌且旧音频正在播放时，仅静音旧音频，
+        // 避免网络解析加载期间继续外放，同时保持 Audio Focus 与 WakeLock 不中断；
+        // 绝不能在后台切歌或自然播完切歌时调用 pause()，否则会导致系统释放 WakeLock 并撤销 Audio Focus，
+        // 造成黑屏切歌卡住不播、必须点亮屏幕才恢复播放。
+        unawaited(audioPlayer.setVolume(0.0));
+      }
     }
     currentSong = song;
     if (queue != null && queue.isNotEmpty) {
@@ -556,6 +564,9 @@ class PlayerController extends ChangeNotifier {
       isPreparing = false;
       notifyListeners();
       unawaited(loadLyrics(song));
+      if (wasPlaying) {
+        unawaited(audioPlayer.setVolume(1.0));
+      }
       await _audioHandler.play();
       if (serial != _playSongSerial) return;
       unawaited(_applyVolumeNormalization());
@@ -573,6 +584,9 @@ class PlayerController extends ChangeNotifier {
       errorMessage = error.toString();
       // 音频加载或解析失败时，确保底座播放器暂停，避免封面与播放内容不对应
       unawaited(_audioHandler.pause());
+      if (wasPlaying) {
+        unawaited(audioPlayer.setVolume(1.0));
+      }
       isPreparing = false;
       notifyListeners();
     } finally {

@@ -145,7 +145,7 @@ class MusicAudioHandler extends BaseAudioHandler
 
   @override
   Future<void> play() async {
-    unawaited(audioPlayer.play());
+    await audioPlayer.play();
   }
 
   @override
