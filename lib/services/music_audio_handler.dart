@@ -1,6 +1,8 @@
 import 'dart:async';
 
 import 'package:audio_service/audio_service.dart';
+import 'package:audio_session/audio_session.dart';
+import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart';
 
 import '../models/music_models.dart';
@@ -56,8 +58,8 @@ class MusicAudioHandler extends BaseAudioHandler
   }
 
   @override
-  Future<void> updateQueue(List<MediaItem> newQueue) async {
-    queue.add(newQueue);
+  Future<void> updateQueue(List<MediaItem> queue) async {
+    this.queue.add(queue);
   }
 
   Future<void> setSongQueue({
@@ -109,7 +111,58 @@ class MusicAudioHandler extends BaseAudioHandler
 
   @override
   Future<void> play() async {
-    unawaited(audioPlayer.play());
+    final session = await AudioSession.instance;
+    Object? lastError;
+
+    // iOS 首次设置音源后，just_audio 可能短暂发出 playing=true，
+    // 随后因音频会话激活还未稳定而回落为 false。只等到第一个 true
+    // 会把这种情况误判为自动播放成功，而用户再点一次就能播放。
+    // 在这里确认播放状态能短暂保持；若首次回落，重新激活会话并重试。
+    for (var attempt = 0; attempt < 3; attempt++) {
+      try {
+        debugPrint(
+          '[KA Music][playback] start-attempt=${attempt + 1} '
+          'state=${audioPlayer.processingState.name}',
+        );
+        if (!await session.setActive(true)) {
+          throw StateError('无法启动系统音频会话');
+        }
+
+        final playback = audioPlayer.play();
+        await Future.any<void>([
+          audioPlayer.playerStateStream
+              .firstWhere((state) => state.playing)
+              .then<void>((_) {}),
+          playback.then<void>((_) {
+            if (!audioPlayer.playing) {
+              throw StateError('播放器未保持播放状态');
+            }
+          }),
+        ]).timeout(const Duration(seconds: 3));
+
+        // playing 在 play() 后会立即变为 true，稍后再检查一次，
+        // 避免把瞬时变化误当成已经真正启播。
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+        if (audioPlayer.playing) {
+          debugPrint(
+            '[KA Music][playback] start-attempt=${attempt + 1} stable',
+          );
+          return;
+        }
+        lastError = StateError('播放启动后立即停止');
+      } catch (error) {
+        lastError = error;
+        debugPrint(
+          '[KA Music][playback] start-attempt=${attempt + 1} failed: $error',
+        );
+      }
+
+      if (attempt < 2) {
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      }
+    }
+
+    throw StateError('无法自动开始播放：${lastError ?? '未知错误'}');
   }
 
   @override

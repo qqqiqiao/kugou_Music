@@ -12,14 +12,16 @@ class ShuffleCycle<T> {
   ShuffleCycle({Random? random}) : _random = random ?? Random();
 
   final Random _random;
-  List<T> _items = const [];
-  List<T> _remaining = const [];
+  List<T> _items = <T>[];
+  List<T> _remaining = <T>[];
   final List<T> _history = <T>[];
   int _historyIndex = -1;
 
   void clear() {
-    _items = const [];
-    _remaining = const [];
+    // [markPlayed] may be called before the next reset (for example when a
+    // restored queue is played immediately), so these lists must stay mutable.
+    _items = <T>[];
+    _remaining = <T>[];
     _history.clear();
     _historyIndex = -1;
   }

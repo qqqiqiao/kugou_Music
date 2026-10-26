@@ -43,12 +43,14 @@ Future<void> main() async {
   await themeController.detectAutomotive(const DeviceInfoService());
   await themeController.load();
 
-  runApp(KaMusicApp(
-    client: client,
-    api: api,
-    audioHandler: audioHandler,
-    themeController: themeController,
-  ));
+  runApp(
+    KaMusicApp(
+      client: client,
+      api: api,
+      audioHandler: audioHandler,
+      themeController: themeController,
+    ),
+  );
 }
 
 class KaMusicApp extends StatefulWidget {
@@ -103,7 +105,10 @@ class _KaMusicAppState extends State<KaMusicApp> with WidgetsBindingObserver {
 
   /// 恢复上次的播放队列和进度。
   Future<void> _restorePlaybackState() async {
-    await _player.restoreQueueState();
+    // 如果用户在本地状态读取完成前已经主动点歌，恢复流程会取消，
+    // 避免已保存的旧队列覆盖用户刚刚选择的歌曲。
+    if (!await _player.restoreQueueState()) return;
+    final restoredSong = _player.currentSong;
     // 开机自启播放（推荐歌单）开启时，不预加载上次的歌曲：首页的自动播放逻辑
     // 会用每日推荐歌单接管，避免恢复队列与自动播放竞争覆盖同一播放源。
     if (await PlayerController.isAutoPlayOnStartup()) {
@@ -112,30 +117,54 @@ class _KaMusicAppState extends State<KaMusicApp> with WidgetsBindingObserver {
     // “恢复上次播放列表”开启时：恢复上次队列/进度并自动播放（与推荐歌单互斥，
     // 不会走到上述分支）。本地无记录则尝试服务端「继续播放」。
     if (await PlayerController.isResumeLastPlaylistOnStartup()) {
-      if (_player.currentSong != null) {
-        unawaited(_player.prepareRestoredSong(autoPlay: true));
+      if (restoredSong != null) {
+        if (!identical(_player.currentSong, restoredSong)) return;
+        unawaited(
+          _player.prepareRestoredSong(
+            autoPlay: true,
+            expectedSong: restoredSong,
+          ),
+        );
         return;
       }
+      // 本地恢复期间用户已主动点歌，不再用服务端记录覆盖。
+      if (_player.currentSong != null) return;
       try {
         final latest = await _api.latestListenSongs();
         if (_player.currentSong != null || latest.songs.isEmpty) return;
         _player.restoreFromServerQueue(latest.songs);
-        unawaited(_player.prepareRestoredSong(autoPlay: true));
+        final serverRestoredSong = _player.currentSong;
+        if (serverRestoredSong != null) {
+          unawaited(
+            _player.prepareRestoredSong(
+              autoPlay: true,
+              expectedSong: serverRestoredSong,
+            ),
+          );
+        }
       } catch (_) {
         // 服务端恢复失败静默忽略，保持空状态。
       }
       return;
     }
-    if (_player.currentSong != null) {
-      unawaited(_player.prepareRestoredSong());
+    if (restoredSong != null) {
+      if (!identical(_player.currentSong, restoredSong)) return;
+      unawaited(_player.prepareRestoredSong(expectedSong: restoredSong));
       return;
     }
+    // 读取开关期间用户已主动点歌，不能把这首新歌当成旧记录预加载。
+    if (_player.currentSong != null) return;
     // 本地无播放记录时，尝试用服务端「继续播放」信息恢复。
     try {
       final latest = await _api.latestListenSongs();
       if (_player.currentSong != null || latest.songs.isEmpty) return;
       _player.restoreFromServerQueue(latest.songs);
-      unawaited(_player.prepareRestoredSong());
+      final serverRestoredSong = _player.currentSong;
+      if (serverRestoredSong != null) {
+        unawaited(
+          _player.prepareRestoredSong(expectedSong: serverRestoredSong),
+        );
+      }
     } catch (_) {
       // 服务端恢复失败静默忽略，保持空状态。
     }
@@ -197,7 +226,9 @@ class _KaMusicAppState extends State<KaMusicApp> with WidgetsBindingObserver {
               data: MediaQuery.of(context).copyWith(textScaler: textScaler),
               child: _AppBackground(
                 themeController: _theme,
-                child: _SystemUiOverlay(child: child ?? const SizedBox.shrink()),
+                child: _SystemUiOverlay(
+                  child: child ?? const SizedBox.shrink(),
+                ),
               ),
             );
           },
