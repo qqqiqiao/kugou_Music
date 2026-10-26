@@ -14,6 +14,30 @@ enum LogLevel {
   error,
 }
 
+class LogStats {
+  const LogStats({
+    required this.fileCount,
+    required this.totalBytes,
+    required this.entryCount,
+    this.earliestDate,
+    this.latestDate,
+  });
+
+  final int fileCount;
+  final int totalBytes;
+  final int entryCount;
+  final DateTime? earliestDate;
+  final DateTime? latestDate;
+
+  String get formattedSize {
+    if (totalBytes < 1024) return '$totalBytes B';
+    if (totalBytes < 1024 * 1024) {
+      return '${(totalBytes / 1024).toStringAsFixed(1)} KB';
+    }
+    return '${(totalBytes / (1024 * 1024)).toStringAsFixed(2)} MB';
+  }
+}
+
 class LogEntry {
   const LogEntry({
     required this.timestamp,
@@ -79,7 +103,11 @@ class LogService {
 
   /// 初始化日志系统，配置存储目录并接管全局输出与错误监听。
   Future<void> init({Directory? logDirectoryOverride}) async {
-    if (_initialized) return;
+    if (logDirectoryOverride != null) {
+      _logDir = logDirectoryOverride;
+      _currentFile = null;
+    }
+    if (_initialized && logDirectoryOverride == null) return;
     _initialized = true;
 
     try {
@@ -262,22 +290,64 @@ class LogService {
     } catch (_) {}
   }
 
-  String _buildSystemInfoHeader() {
+  String _buildSystemInfoHeader({bool isFull = true}) {
     final buffer = StringBuffer();
     buffer.writeln('==================================================');
-    buffer.writeln('KA Music Diagnostics Log');
-    buffer.writeln('App Version: ${AppConfig.appVersion}');
-    buffer.writeln('OS Platform: ${Platform.operatingSystem} ${Platform.operatingSystemVersion}');
-    buffer.writeln('Created At : ${DateTime.now().toIso8601String()}');
+    buffer.writeln('KA Music Diagnostics Log${isFull ? ' (Full Logs)' : ''}');
+    buffer.writeln('App Version : ${AppConfig.appVersion}');
+    buffer.writeln('Base URL    : ${AppConfig.effectiveBaseUrl}');
+    buffer.writeln('OS Platform : ${Platform.operatingSystem} ${Platform.operatingSystemVersion}');
+    buffer.writeln('Created At  : ${DateTime.now().toIso8601String()}');
     buffer.writeln('==================================================');
     return buffer.toString();
   }
 
+  /// 获取本地日志统计信息（文件数量、总占用大小等）。
+  Future<LogStats> getLogStats() async {
+    await flush();
+    int fileCount = 0;
+    int totalBytes = 0;
+    DateTime? earliest;
+    DateTime? latest;
+
+    if (_logDir != null && _logDir!.existsSync()) {
+      try {
+        final files = _logDir!
+            .listSync()
+            .whereType<File>()
+            .where((f) => f.path.endsWith('.log'))
+            .toList();
+        fileCount = files.length;
+        for (final file in files) {
+          final stat = file.statSync();
+          totalBytes += stat.size;
+          if (earliest == null || stat.modified.isBefore(earliest)) {
+            earliest = stat.modified;
+          }
+          if (latest == null || stat.modified.isAfter(latest)) {
+            latest = stat.modified;
+          }
+        }
+      } catch (_) {}
+    }
+
+    return LogStats(
+      fileCount: fileCount,
+      totalBytes: totalBytes,
+      entryCount: _recentEntries.length,
+      earliestDate: earliest,
+      latestDate: latest,
+    );
+  }
+
   /// 生成适合排查问题的完整日志字符串。
-  Future<String> exportLogsText({int maxLines = 2000}) async {
+  ///
+  /// 当 [maxLines] 为 null 时导出全量日志（包含本地存储的所有历史日志文件全部内容，不设截断）；
+  /// 当指定 [maxLines] 时，截取最近的 [maxLines] 行。
+  Future<String> exportLogsText({int? maxLines}) async {
     await flush();
     final buffer = StringBuffer();
-    buffer.writeln(_buildSystemInfoHeader());
+    buffer.writeln(_buildSystemInfoHeader(isFull: maxLines == null));
     buffer.writeln();
 
     if (_logDir != null && _logDir!.existsSync()) {
@@ -297,8 +367,8 @@ class LogService {
           } catch (_) {}
         }
 
-        if (collectedLines.length > maxLines) {
-          buffer.writeln('... [Earlier logs truncated for export length] ...');
+        if (maxLines != null && collectedLines.length > maxLines) {
+          buffer.writeln('... [Earlier logs truncated for export length: showing last $maxLines lines] ...');
           for (final line in collectedLines.sublist(collectedLines.length - maxLines)) {
             buffer.writeln(line);
           }
@@ -319,7 +389,9 @@ class LogService {
   }
 
   /// 复制日志文本到系统剪贴板。
-  Future<bool> copyLogsToClipboard({int maxLines = 1500}) async {
+  ///
+  /// [maxLines] 为 null 时复制全量日志。
+  Future<bool> copyLogsToClipboard({int? maxLines = 2000}) async {
     try {
       final text = await exportLogsText(maxLines: maxLines);
       await Clipboard.setData(ClipboardData(text: text));
@@ -331,13 +403,22 @@ class LogService {
 
   /// 导出日志到用户可见的文件中，返回导出的文件完整路径。
   ///
+  /// [fullLogs] 为 true 时导出全量日志（包含全部历史持久化文件，不设行数截断上限）；
+  /// [customContent] 允许直接导出自定义日志文本（例如当前搜索/过滤视图的结果）。
   /// Android 平台优先导出到系统公共 Download 目录（Download/KA Music/logs），
   /// 桌面端与其它平台优先导出到系统下载文件夹或应用文档目录。
-  Future<String?> exportLogsToFile({String? customDestinationDir}) async {
-    final text = await exportLogsText();
+  Future<String?> exportLogsToFile({
+    String? customDestinationDir,
+    bool fullLogs = true,
+    String? customContent,
+  }) async {
+    final text = customContent ?? await exportLogsText(maxLines: fullLogs ? null : 2000);
     final now = DateTime.now();
+    final prefix = customContent != null
+        ? 'ka_music_filtered_log'
+        : (fullLogs ? 'ka_music_full_log' : 'ka_music_log');
     final fileName =
-        'ka_music_log_${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}_${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}${now.second.toString().padLeft(2, '0')}.txt';
+        '${prefix}_${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}_${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}${now.second.toString().padLeft(2, '0')}.txt';
 
     Directory targetDir;
     if (customDestinationDir != null && customDestinationDir.trim().isNotEmpty) {

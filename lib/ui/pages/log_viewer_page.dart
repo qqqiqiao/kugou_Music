@@ -109,12 +109,51 @@ class _LogViewerPageState extends State<LogViewerPage> {
 
   Future<void> _handleExportToFile() async {
     if (_isExporting) return;
+
+    final hasFilter = _keyword.isNotEmpty || _selectedCategory != 'all';
+    if (hasFilter) {
+      final choice = await showDialog<String>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('选择导出范围'),
+          content: Text(
+            '当前已设置筛选（共 ${_filteredEntries.length} 条记录）。\n请选择导出完整全量日志还是仅导出当前筛选结果：',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop('filtered'),
+              child: const Text('仅当前筛选'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(ctx).pop('full'),
+              child: const Text('导出全量日志 (推荐)'),
+            ),
+          ],
+        ),
+      );
+      if (choice == null) return;
+      if (choice == 'filtered') {
+        final content = _filteredEntries.map((e) => e.format()).join('\n');
+        await _performExport(customContent: content, isFull: false);
+        return;
+      }
+    }
+
+    await _performExport(isFull: true);
+  }
+
+  Future<void> _performExport({String? customContent, required bool isFull}) async {
     setState(() => _isExporting = true);
     try {
-      final savedPath = await LogService.instance.exportLogsToFile();
+      final savedPath = await LogService.instance.exportLogsToFile(
+        fullLogs: isFull,
+        customContent: customContent,
+      );
       if (!mounted) return;
       if (savedPath != null) {
-        _showExportSuccessDialog(savedPath);
+        final stats = await LogService.instance.getLogStats();
+        if (!mounted) return;
+        _showExportSuccessDialog(savedPath, isFull: isFull, stats: stats);
       } else {
         Toast.error('导出日志文件失败');
       }
@@ -125,23 +164,42 @@ class _LogViewerPageState extends State<LogViewerPage> {
     }
   }
 
-  void _showExportSuccessDialog(String path) {
+  void _showExportSuccessDialog(
+    String path, {
+    required bool isFull,
+    LogStats? stats,
+  }) {
     showDialog<void>(
       context: context,
       builder: (dialogCtx) => AlertDialog(
-        title: const Row(
+        title: Row(
           children: [
-            Icon(Icons.check_circle_rounded, color: Colors.green),
-            SizedBox(width: 8),
-            Text('日志导出成功'),
+            const Icon(Icons.check_circle_rounded, color: Colors.green),
+            const SizedBox(width: 8),
+            Text(isFull ? '全量日志导出成功' : '日志导出成功'),
           ],
         ),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('日志文件已成功写入到本地：'),
-            const SizedBox(height: 10),
+            Text(
+              isFull
+                  ? '已将本地完整全量日志（UTF-8 纯文本格式 .txt）导出：'
+                  : '已将筛选日志（UTF-8 纯文本格式 .txt）导出：',
+              style: const TextStyle(fontSize: 13),
+            ),
+            if (isFull && stats != null) ...[
+              const SizedBox(height: 6),
+              Text(
+                '总日志文件：${stats.fileCount} 个  |  总体积：${stats.formattedSize}',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+            const SizedBox(height: 12),
             Container(
               padding: const EdgeInsets.all(10),
               decoration: BoxDecoration(
@@ -177,10 +235,21 @@ class _LogViewerPageState extends State<LogViewerPage> {
   }
 
   Future<void> _handleCopyAll() async {
+    if (_keyword.isNotEmpty || _selectedCategory != 'all') {
+      final text = _filteredEntries.map((e) => e.format()).join('\n');
+      if (text.isEmpty) {
+        Toast.info('当前筛选结果为空');
+        return;
+      }
+      await Clipboard.setData(ClipboardData(text: text));
+      if (mounted) Toast.success('已复制当前筛选的 ${_filteredEntries.length} 条日志');
+      return;
+    }
+
     final success = await LogService.instance.copyLogsToClipboard();
     if (!mounted) return;
     if (success) {
-      Toast.success('日志已全部复制到剪贴板');
+      Toast.success('全量诊断日志已复制到剪贴板');
     } else {
       Toast.error('复制失败');
     }
@@ -366,7 +435,7 @@ class _LogViewerPageState extends State<LogViewerPage> {
                               child: CircularProgressIndicator(strokeWidth: 2),
                             )
                           : const Icon(Icons.file_download_outlined, size: 16),
-                      label: const Text('导出文件'),
+                      label: const Text('导出全量日志'),
                     ),
                   ],
                 ),

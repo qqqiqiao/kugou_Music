@@ -51,29 +51,63 @@ void main() {
     expect(entriesFromStream.any((e) => e.message == 'Hello log test'), isTrue);
   });
 
-  test('LogService exports log text with system info header', () async {
+  test('LogService exports log text with system info header and full content', () async {
     LogService.instance.record('Log before export', level: LogLevel.info);
     final text = await LogService.instance.exportLogsText();
 
-    expect(text, contains('KA Music Diagnostics Log'));
+    expect(text, contains('KA Music Diagnostics Log (Full Logs)'));
     expect(text, contains('Log before export'));
   });
 
-  test('LogService exports log to file in specified directory', () async {
+  test('LogService returns valid LogStats', () async {
+    LogService.instance.record('Stats testing entry');
+    await LogService.instance.flush();
+    final stats = await LogService.instance.getLogStats();
+
+    expect(stats.fileCount, greaterThanOrEqualTo(1));
+    expect(stats.formattedSize, isNotEmpty);
+    expect(stats.entryCount, greaterThanOrEqualTo(1));
+  });
+
+  test('LogService exports full log to file in specified directory', () async {
     final exportDir = await Directory.systemTemp.createTemp('ka_log_export_test_');
     try {
       LogService.instance.record('File export log entry', level: LogLevel.warning);
       final filePath = await LogService.instance.exportLogsToFile(
         customDestinationDir: exportDir.path,
+        fullLogs: true,
       );
 
       expect(filePath, isNotNull);
+      expect(filePath, contains('ka_music_full_log'));
       final file = File(filePath!);
       expect(file.existsSync(), isTrue);
 
       final content = await file.readAsString();
       expect(content, contains('File export log entry'));
-      expect(content, contains('KA Music Diagnostics Log'));
+      expect(content, contains('KA Music Diagnostics Log (Full Logs)'));
+    } finally {
+      if (exportDir.existsSync()) {
+        exportDir.deleteSync(recursive: true);
+      }
+    }
+  });
+
+  test('LogService exports custom filtered content to file', () async {
+    final exportDir = await Directory.systemTemp.createTemp('ka_log_export_filter_');
+    try {
+      final filePath = await LogService.instance.exportLogsToFile(
+        customDestinationDir: exportDir.path,
+        customContent: '[2026-10-26 12:00:00.000] [ERROR] Only filtered error',
+      );
+
+      expect(filePath, isNotNull);
+      expect(filePath, contains('ka_music_filtered_log'));
+      final file = File(filePath!);
+      expect(file.existsSync(), isTrue);
+
+      final content = await file.readAsString();
+      expect(content, equals('[2026-10-26 12:00:00.000] [ERROR] Only filtered error'));
     } finally {
       if (exportDir.existsSync()) {
         exportDir.deleteSync(recursive: true);
